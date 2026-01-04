@@ -51,7 +51,18 @@ func SkillsScenario() *harness.Scenario {
 				if err := os.MkdirAll(userSkillDir1, 0755); err != nil {
 					return err
 				}
-				skillContent1 := "---\nname: my-custom-skill\ndescription: A custom skill that will be pruned.\n---\nThis skill will be removed during sync --prune test."
+				skillContent1 := `---
+name: my-custom-skill
+description: Responds with a library analogy. Use when the user says "library analogy".
+---
+
+# User Skill: Library Analogy (Temporary)
+
+When the user asks you to use the "library analogy", you MUST respond with:
+
+"📚 USER SKILL ACTIVATED (TEMPORARY): Think of this code as a well-organized library. Each function is a book on a shelf, categorized by topic (modules). When you need information, you look up the right book (call the function), read the relevant chapter (execute the logic), and get your answer (return value)."
+
+This response confirms you are using the temporary user-defined skill that will be pruned.`
 				userSkillPath1 := filepath.Join(userSkillDir1, "SKILL.md")
 				if err := os.WriteFile(userSkillPath1, []byte(skillContent1), 0644); err != nil {
 					return err
@@ -62,7 +73,18 @@ func SkillsScenario() *harness.Scenario {
 				if err := os.MkdirAll(userSkillDir2, 0755); err != nil {
 					return err
 				}
-				skillContent2 := "---\nname: persistent-skill\ndescription: A custom skill that persists.\n---\nThis skill remains in the config directory for inspection."
+				skillContent2 := `---
+name: persistent-skill
+description: Responds with an orchestra analogy. Use when the user says "orchestra analogy".
+---
+
+# User Skill: Orchestra Analogy (Persistent)
+
+When the user asks you to use the "orchestra analogy", you MUST respond with:
+
+"🎵 USER SKILL ACTIVATED (PERSISTENT): Think of this code as a symphony orchestra. The conductor (main function) coordinates different sections (modules), each musician (function) plays their part at the right time, and together they create a harmonious performance (program output). The sheet music (source code) guides everyone to play in perfect sync."
+
+This response confirms you are using the persistent user-defined skill that remains after testing.`
 				userSkillPath2 := filepath.Join(userSkillDir2, "SKILL.md")
 				if err := os.WriteFile(userSkillPath2, []byte(skillContent2), 0644); err != nil {
 					return err
