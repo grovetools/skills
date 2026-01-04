@@ -12,6 +12,7 @@ func init() {
 
 	// Add commands
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newSkillsCmd())
 }
 
 func Execute() error {

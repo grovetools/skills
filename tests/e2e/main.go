@@ -14,6 +14,7 @@ func main() {
 	scenarios := []*harness.Scenario{
 		// Basic Scenarios
 		BasicScenario(),
+		SkillsScenario(),
 	}
 
 	// Execute the custom tend application with our scenarios
