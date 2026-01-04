@@ -1,16 +1,101 @@
 package skills
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed data/skills
 var embeddedSkillsFS embed.FS
+
+// SkillMetadata represents the YAML frontmatter of a SKILL.md file
+type SkillMetadata struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
+
+// ValidationError represents a skill validation error
+type ValidationError struct {
+	SkillName string
+	Errors    []string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("skill '%s' validation failed: %v", e.SkillName, e.Errors)
+}
+
+// nameRegex validates skill names: lowercase alphanumeric with single hyphen separators
+var nameRegex = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// ValidateSkillContent validates the content of a SKILL.md file
+func ValidateSkillContent(content []byte, expectedName string) error {
+	metadata, err := parseSkillFrontmatter(content)
+	if err != nil {
+		return fmt.Errorf("failed to parse SKILL.md frontmatter: %w", err)
+	}
+
+	var errors []string
+
+	// Validate name
+	if metadata.Name == "" {
+		errors = append(errors, "missing required field 'name'")
+	} else {
+		if len(metadata.Name) > 64 {
+			errors = append(errors, fmt.Sprintf("name exceeds 64 characters (got %d)", len(metadata.Name)))
+		}
+		if !nameRegex.MatchString(metadata.Name) {
+			errors = append(errors, "name must be lowercase alphanumeric with single hyphen separators (e.g., 'my-skill-name')")
+		}
+		if expectedName != "" && metadata.Name != expectedName {
+			errors = append(errors, fmt.Sprintf("name '%s' does not match directory name '%s'", metadata.Name, expectedName))
+		}
+	}
+
+	// Validate description
+	if metadata.Description == "" {
+		errors = append(errors, "missing required field 'description'")
+	} else if len(metadata.Description) > 1024 {
+		errors = append(errors, fmt.Sprintf("description exceeds 1024 characters (got %d)", len(metadata.Description)))
+	}
+
+	if len(errors) > 0 {
+		return &ValidationError{SkillName: expectedName, Errors: errors}
+	}
+
+	return nil
+}
+
+// parseSkillFrontmatter extracts and parses YAML frontmatter from SKILL.md content
+func parseSkillFrontmatter(content []byte) (*SkillMetadata, error) {
+	// Frontmatter must start with "---" on line 1
+	if !bytes.HasPrefix(content, []byte("---")) {
+		return nil, fmt.Errorf("SKILL.md must start with '---' frontmatter delimiter")
+	}
+
+	// Find the closing "---"
+	rest := content[3:]
+	endIdx := bytes.Index(rest, []byte("\n---"))
+	if endIdx == -1 {
+		return nil, fmt.Errorf("missing closing '---' frontmatter delimiter")
+	}
+
+	frontmatter := rest[:endIdx]
+
+	var metadata SkillMetadata
+	if err := yaml.Unmarshal(frontmatter, &metadata); err != nil {
+		return nil, fmt.Errorf("invalid YAML in frontmatter: %w", err)
+	}
+
+	return &metadata, nil
+}
 
 // getUserSkillsPath returns the path to the user-defined skills directory (~/.config/grove/skills).
 // It respects XDG_CONFIG_HOME if set, otherwise falls back to $HOME/.config

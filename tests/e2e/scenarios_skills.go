@@ -201,6 +201,139 @@ This response confirms you are using the persistent user-defined skill that rema
 				}
 				return nil
 			}),
+			harness.NewStep("remove installed skill", func(ctx *harness.Context) error {
+				binary, err := FindBinary()
+				if err != nil {
+					return err
+				}
+
+				homeDir := ctx.HomeDir()
+				configDir := ctx.ConfigDir()
+
+				// First verify skill exists
+				skillPath := filepath.Join(homeDir, ".opencode", "skill", "explain-with-analogy")
+				if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+					return fmt.Errorf("skill should exist before removal at %s", skillPath)
+				}
+
+				// Remove the skill
+				cmd := command.New(binary, "skills", "remove", "explain-with-analogy", "--scope", "user", "--provider", "opencode").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				result := cmd.Run()
+				if result.ExitCode != 0 {
+					return fmt.Errorf("remove failed: %s", result.Stderr)
+				}
+
+				// Verify skill was removed
+				if _, err := os.Stat(skillPath); !os.IsNotExist(err) {
+					return fmt.Errorf("skill should have been removed from %s", skillPath)
+				}
+
+				// Try to remove non-existent skill (should fail)
+				cmdFail := command.New(binary, "skills", "remove", "non-existent-skill", "--scope", "user", "--provider", "opencode").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				resultFail := cmdFail.Run()
+				if resultFail.ExitCode == 0 {
+					return fmt.Errorf("removing non-existent skill should have failed")
+				}
+
+				return nil
+			}),
+			harness.NewStep("validation rejects invalid skills", func(ctx *harness.Context) error {
+				binary, err := FindBinary()
+				if err != nil {
+					return err
+				}
+
+				homeDir := ctx.HomeDir()
+				configDir := ctx.ConfigDir()
+
+				// Create skill with missing description
+				invalidSkillDir := filepath.Join(configDir, "grove", "skills", "invalid-skill")
+				if err := os.MkdirAll(invalidSkillDir, 0755); err != nil {
+					return err
+				}
+				invalidContent := `---
+name: invalid-skill
+---
+
+Missing description field.`
+				if err := os.WriteFile(filepath.Join(invalidSkillDir, "SKILL.md"), []byte(invalidContent), 0644); err != nil {
+					return err
+				}
+
+				// Try to install - should fail validation
+				cmd := command.New(binary, "skills", "install", "invalid-skill", "--scope", "project").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				result := cmd.Run()
+				if result.ExitCode == 0 {
+					return fmt.Errorf("install should have failed due to validation")
+				}
+				if !strings.Contains(result.Stderr, "missing required field 'description'") {
+					return fmt.Errorf("expected validation error about missing description, got: %s", result.Stderr)
+				}
+
+				// Install with --skip-validation should succeed
+				cmdSkip := command.New(binary, "skills", "install", "invalid-skill", "--scope", "project", "--skip-validation").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				resultSkip := cmdSkip.Run()
+				if resultSkip.ExitCode != 0 {
+					return fmt.Errorf("install with --skip-validation should succeed: %s", resultSkip.Stderr)
+				}
+
+				return nil
+			}),
+			harness.NewStep("force flag required for overwrite", func(ctx *harness.Context) error {
+				binary, err := FindBinary()
+				if err != nil {
+					return err
+				}
+
+				homeDir := ctx.HomeDir()
+				configDir := ctx.ConfigDir()
+
+				// Install a skill first
+				skillPath := filepath.Join(homeDir, ".claude", "skills", "persistent-skill")
+				cmd := command.New(binary, "skills", "install", "persistent-skill", "--scope", "user", "--provider", "claude").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				result := cmd.Run()
+				if result.ExitCode != 0 {
+					return fmt.Errorf("initial install failed: %s", result.Stderr)
+				}
+
+				// Try to install again without --force (should fail)
+				cmdNoForce := command.New(binary, "skills", "install", "persistent-skill", "--scope", "user", "--provider", "claude").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				resultNoForce := cmdNoForce.Run()
+				if resultNoForce.ExitCode == 0 {
+					return fmt.Errorf("install without --force should fail when skill exists")
+				}
+				if !strings.Contains(resultNoForce.Stderr, "already exists") {
+					return fmt.Errorf("expected 'already exists' error, got: %s", resultNoForce.Stderr)
+				}
+
+				// Install with --force should succeed
+				cmdForce := command.New(binary, "skills", "install", "persistent-skill", "--scope", "user", "--provider", "claude", "--force").
+					Dir(ctx.RootDir).
+					Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
+				resultForce := cmdForce.Run()
+				if resultForce.ExitCode != 0 {
+					return fmt.Errorf("install with --force should succeed: %s", resultForce.Stderr)
+				}
+
+				// Verify skill still exists
+				if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+					return fmt.Errorf("skill should exist after force install at %s", skillPath)
+				}
+
+				return nil
+			}),
 		},
 	}
 }
