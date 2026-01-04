@@ -51,8 +51,14 @@ func SkillsScenario() *harness.Scenario {
 					return err
 				}
 				skillContent := "---\nname: my-custom-skill\ndescription: A custom skill.\n---\nHello from custom skill!"
-				if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+				userSkillPath := filepath.Join(userSkillDir, "SKILL.md")
+				if err := os.WriteFile(userSkillPath, []byte(skillContent), 0644); err != nil {
 					return err
+				}
+
+				// Verify the user-defined skill SKILL.md was created
+				if _, err := os.Stat(userSkillPath); os.IsNotExist(err) {
+					return fmt.Errorf("user-defined SKILL.md not found at %s", userSkillPath)
 				}
 
 				// Install it to the project scope for the 'codex' provider
