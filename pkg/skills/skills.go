@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/mattsolo1/grove-core/pkg/workspace"
+	"github.com/mattsolo1/grove-skills/pkg/service"
 	"gopkg.in/yaml.v3"
 )
 
@@ -117,9 +119,17 @@ func getUserSkillsPath() (string, error) {
 	return filepath.Join(configDir, "grove", "skills"), nil
 }
 
-// ListSkills returns a slice of available skill names and a map indicating their source ("builtin" or "user").
-// User skills with the same name as a built-in skill will take precedence.
+// ListSkills returns a slice of available skill names and a map indicating their source.
+// Precedence: notebook > user > builtin
+// Skills with the same name as a skill from a lower-precedence source will take precedence.
 func ListSkills() ([]string, map[string]string, error) {
+	return ListSkillsWithService(nil)
+}
+
+// ListSkillsWithService returns a slice of available skill names and a map indicating their source.
+// If a service is provided, notebook skills will also be discovered.
+// Precedence: notebook > user > builtin
+func ListSkillsWithService(svc *service.Service) ([]string, map[string]string, error) {
 	skillMap := make(map[string]string)
 
 	// 1. Load built-in skills
@@ -145,6 +155,14 @@ func ListSkills() ([]string, map[string]string, error) {
 		}
 	}
 
+	// 3. Load notebook skills (highest precedence)
+	notebookSkills, err := findNotebookSkills(svc)
+	if err == nil {
+		for name := range notebookSkills {
+			skillMap[name] = "notebook"
+		}
+	}
+
 	var skillNames []string
 	for name := range skillMap {
 		skillNames = append(skillNames, name)
@@ -153,10 +171,29 @@ func ListSkills() ([]string, map[string]string, error) {
 	return skillNames, skillMap, nil
 }
 
-// GetSkill retrieves all files for a given skill, checking user-defined skills first.
+// GetSkill retrieves all files for a given skill, checking sources in order of precedence.
+// Precedence: notebook > user > builtin
 // It returns a map of relative file paths to their content.
 func GetSkill(name string) (map[string][]byte, error) {
-	// 1. Try user skills first
+	return GetSkillWithService(nil, name)
+}
+
+// GetSkillWithService retrieves all files for a given skill, checking sources in order of precedence.
+// If a service is provided, notebook skills will also be checked.
+// Precedence: notebook > user > builtin
+func GetSkillWithService(svc *service.Service, name string) (map[string][]byte, error) {
+	// 1. Try notebook skills first (highest precedence)
+	notebookSkills, err := findNotebookSkills(svc)
+	if err == nil {
+		if skillPath, ok := notebookSkills[name]; ok {
+			skillFiles, err := readSkillFromDisk(skillPath)
+			if err == nil {
+				return skillFiles, nil // Found in notebook
+			}
+		}
+	}
+
+	// 2. Try user skills second
 	userSkillsPath, err := getUserSkillsPath()
 	if err == nil {
 		skillFiles, err := readSkillFromDisk(filepath.Join(userSkillsPath, name))
@@ -165,7 +202,7 @@ func GetSkill(name string) (map[string][]byte, error) {
 		}
 	}
 
-	// 2. Fallback to embedded skills
+	// 3. Fallback to embedded skills
 	return readSkillFromFS(embeddedSkillsFS, name)
 }
 
@@ -216,4 +253,51 @@ func readSkillFromFS(srcFS fs.FS, name string) (map[string][]byte, error) {
 		return nil, fmt.Errorf("embedded skill '%s' not found", name)
 	}
 	return skillFiles, nil
+}
+
+// findNotebookSkills discovers skills within the current workspace's notebook.
+// It returns a map of skill names to their absolute paths on disk.
+func findNotebookSkills(svc *service.Service) (map[string]string, error) {
+	if svc == nil || svc.Provider == nil || svc.NotebookLocator == nil {
+		return nil, fmt.Errorf("service not initialized for notebook skill discovery")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get current workspace context using grove-core's workspace lookup
+	node, err := workspace.GetProjectByPath(cwd)
+	if err != nil {
+		// Not in a workspace, no notebook skills to find
+		return nil, nil
+	}
+
+	// Find the skills directory for this workspace using NotebookLocator
+	skillsDir, err := svc.NotebookLocator.GetGroupDir(node, "skills")
+	if err != nil || skillsDir == "" {
+		return nil, nil
+	}
+
+	// Check if the skills directory exists
+	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	// Scan for skill directories
+	skillPaths := make(map[string]string)
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil, nil // Directory may not exist or be readable
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			skillName := entry.Name()
+			skillPaths[skillName] = filepath.Join(skillsDir, skillName)
+		}
+	}
+
+	return skillPaths, nil
 }
