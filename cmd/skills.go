@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,7 +78,6 @@ func newSkillsListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List available skills from all sources",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
 			svc := GetService()
 			allSkills, sources, err := skills.ListSkillsWithService(svc)
 			if err != nil {
@@ -88,7 +86,7 @@ func newSkillsListCmd() *cobra.Command {
 			if len(allSkills) == 0 {
 				ulog.Info("No skills found").
 					Pretty("No skills found.").
-					Log(ctx)
+					Emit()
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
