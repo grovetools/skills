@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"github.com/mattsolo1/grove-skills/pkg/skills"
 	"github.com/spf13/cobra"
 )
+
+var ulog = logging.NewUnifiedLogger("grove-skills")
 
 func newSkillsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -76,13 +79,16 @@ func newSkillsListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List available skills from all sources",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
 			svc := GetService()
 			allSkills, sources, err := skills.ListSkillsWithService(svc)
 			if err != nil {
 				return err
 			}
 			if len(allSkills) == 0 {
-				fmt.Println("No skills found.")
+				ulog.Info("No skills found").
+					Pretty("No skills found.").
+					Log(ctx)
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
