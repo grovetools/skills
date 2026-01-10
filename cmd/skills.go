@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -19,10 +20,11 @@ var ulog = logging.NewUnifiedLogger("grove-skills")
 
 func newSkillsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "skills",
-		Short:   "Manage Agent Skills for different providers",
-		Long:    "Install, list, sync, and remove agent skills for providers like Claude Code, Codex, and OpenCode.",
-		Aliases: []string{"skill"},
+		Use:        "skills",
+		Short:      "(deprecated) Use top-level commands instead: install, list, sync, remove",
+		Long:       "This command group is deprecated. Use the top-level commands directly:\n  grove-skills install\n  grove-skills list\n  grove-skills sync\n  grove-skills remove",
+		Aliases:    []string{"skill"},
+		Deprecated: "use top-level commands instead (e.g., 'grove-skills install' instead of 'grove-skills skills install')",
 	}
 
 	cmd.AddCommand(newSkillsInstallCmd())
@@ -74,39 +76,108 @@ func newSkillsInstallCmd() *cobra.Command {
 }
 
 func newSkillsListCmd() *cobra.Command {
-	return &cobra.Command{
+	var showPath bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available skills from all sources",
+		Long: `List all available skills from user, ecosystem, and project sources.
+
+Skills are discovered from:
+  - User skills: ~/.config/grove/skills
+  - Ecosystem skills: notebook skills for the parent ecosystem
+  - Project skills: notebook skills for the current project
+  - Built-in skills: embedded in the grove-skills binary`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := GetService()
-			allSkills, sources, err := skills.ListSkillsWithService(svc)
+
+			// Get current workspace context
+			cwd, err := os.Getwd()
 			if err != nil {
-				return err
+				return fmt.Errorf("could not get current directory: %w", err)
 			}
-			if len(allSkills) == 0 {
+
+			node, err := workspace.GetProjectByPath(cwd)
+			if err != nil {
+				// Fall back to old behavior if not in a workspace
+				return listSkillsLegacy(svc, showPath)
+			}
+
+			// Use the new multi-source discovery
+			if svc == nil {
+				svc, err = skills.NewServiceForNode(node)
+				if err != nil {
+					return listSkillsLegacy(nil, showPath)
+				}
+			}
+
+			sources := skills.ListSkillSources(svc, node)
+			if len(sources) == 0 {
 				ulog.Info("No skills found").
 					Pretty("No skills found.").
 					Emit()
 				return nil
 			}
+
+			// Sort skill names for consistent output
+			var names []string
+			for name := range sources {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SKILL\tSOURCE")
-			for _, name := range allSkills {
-				fmt.Fprintf(w, "%s\t%s\n", name, sources[name])
+			if showPath {
+				fmt.Fprintln(w, "SKILL\tSOURCE\tPATH")
+				for _, name := range names {
+					src := sources[name]
+					fmt.Fprintf(w, "%s\t%s\t%s\n", name, src.Type, src.Path)
+				}
+			} else {
+				fmt.Fprintln(w, "SKILL\tSOURCE")
+				for _, name := range names {
+					fmt.Fprintf(w, "%s\t%s\n", name, sources[name].Type)
+				}
 			}
 			w.Flush()
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&showPath, "path", false, "Show the full path to each skill")
+	return cmd
+}
+
+// listSkillsLegacy falls back to the old listing behavior when not in a workspace
+func listSkillsLegacy(svc *service.Service, showPath bool) error {
+	allSkills, sources, err := skills.ListSkillsWithService(svc)
+	if err != nil {
+		return err
+	}
+	if len(allSkills) == 0 {
+		ulog.Info("No skills found").
+			Pretty("No skills found.").
+			Emit()
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SKILL\tSOURCE")
+	for _, name := range allSkills {
+		fmt.Fprintf(w, "%s\t%s\n", name, sources[name])
+	}
+	w.Flush()
+	return nil
 }
 
 func newSkillsSyncCmd() *cobra.Command {
 	var scope, provider string
-	var prune, skipValidation, ecosystem bool
+	var prune, skipValidation, ecosystem, here bool
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync all available skills to the target directory",
 		Long: `Sync all available skills to the target directory.
+
+When run with --here, syncs skills from all sources (user, ecosystem, project)
+to .claude/skills/ in the current directory. This is useful for setting up
+skills in a worktree or any project directory.
 
 When run with --ecosystem from an ecosystem root, skills from the ecosystem's
 notebook will be synced to all child projects within the ecosystem.`,
@@ -118,6 +189,44 @@ notebook will be synced to all child projects within the ecosystem.`,
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("could not get current directory: %w", err)
+			}
+
+			// Simple --here mode: sync skills to the git root of the current directory
+			if here {
+				node, err := workspace.GetProjectByPath(cwd)
+				if err != nil {
+					return fmt.Errorf("could not determine workspace context: %w", err)
+				}
+
+				// Find the git root - this is where skills should be installed
+				gitRoot, err := git.GetGitRoot(cwd)
+				if err != nil {
+					return fmt.Errorf("could not find git root: %w", err)
+				}
+
+				destDir := skills.GetSkillsDirectoryForWorktree(gitRoot, provider)
+				logger.InfoPretty(fmt.Sprintf("Syncing skills to %s...", destDir))
+				logger.InfoPretty(fmt.Sprintf("  Context: %s (%s)", node.Name, node.Kind))
+
+				// Create service if needed
+				if svc == nil {
+					svc, err = skills.NewServiceForNode(node)
+					if err != nil {
+						return fmt.Errorf("could not create service: %w", err)
+					}
+				}
+
+				syncedCount, err := skills.SyncSkillsToDirectory(svc, node, destDir)
+				if err != nil {
+					logger.WarnPretty(fmt.Sprintf("Some skills failed to sync: %v", err))
+				}
+
+				if syncedCount > 0 {
+					logger.Success(fmt.Sprintf("Synced %d skills to %s", syncedCount, destDir))
+				} else {
+					logger.InfoPretty("No skills found to sync.")
+				}
+				return nil
 			}
 
 			// Ecosystem-aware sync: if --ecosystem flag is set and we're in an ecosystem
@@ -230,6 +339,7 @@ notebook will be synced to all child projects within the ecosystem.`,
 	cmd.Flags().BoolVar(&prune, "prune", false, "Remove skills from destination that no longer exist in source.")
 	cmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "Skip SKILL.md validation.")
 	cmd.Flags().BoolVar(&ecosystem, "ecosystem", false, "Sync skills across all projects in the ecosystem (must be run from ecosystem root).")
+	cmd.Flags().BoolVar(&here, "here", false, "Sync all skills (user, ecosystem, project) to .claude/skills/ in current directory.")
 	return cmd
 }
 

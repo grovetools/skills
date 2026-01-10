@@ -54,8 +54,14 @@ func Initialize() (*cobra.Command, error) {
 		return nil
 	}
 
-	// Add commands
+	// Add commands directly to root (no "skills" subcommand needed)
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newSkillsInstallCmd())
+	rootCmd.AddCommand(newSkillsListCmd())
+	rootCmd.AddCommand(newSkillsSyncCmd())
+	rootCmd.AddCommand(newSkillsRemoveCmd())
+
+	// Keep "skills" as an alias for backwards compatibility
 	rootCmd.AddCommand(newSkillsCmd())
 
 	return rootCmd, nil
