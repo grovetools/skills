@@ -79,5 +79,5 @@ func Execute() error {
 	if err != nil {
 		return err
 	}
-	return rootCmd.Execute()
+	return cli.Execute(rootCmd)
 }
