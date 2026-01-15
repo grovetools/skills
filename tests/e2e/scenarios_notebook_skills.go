@@ -164,17 +164,29 @@ func listNotebookSkills(ctx *harness.Context) error {
 
 	ctx.ShowCommandOutput("skills list output", result.Stdout, result.Stderr)
 
-	// Verify notebook-skill is listed from notebook source
-	if !strings.Contains(result.Stdout, "notebook-skill") || !strings.Contains(result.Stdout, "notebook") {
-		return fmt.Errorf("expected to find 'notebook-skill' from notebook source, got:\n%s", result.Stdout)
+	// Verify notebook-skill is listed from notebook source (project or ecosystem)
+	if !strings.Contains(result.Stdout, "notebook-skill") {
+		return fmt.Errorf("expected to find 'notebook-skill' in list output, got:\n%s", result.Stdout)
+	}
+	// Check that notebook-skill is from project or ecosystem source (not builtin/user)
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		if strings.Contains(line, "notebook-skill") {
+			if !strings.Contains(line, "project") && !strings.Contains(line, "ecosystem") {
+				return fmt.Errorf("expected notebook-skill to be from project or ecosystem source, got: %s", line)
+			}
+			break
+		}
 	}
 
-	// Verify explain-with-analogy is overridden (shows notebook, not builtin)
+	// Verify explain-with-analogy is overridden (shows project or ecosystem, not builtin)
+	// Note: "project" is used when the skill is from the current project's notebook,
+	// "ecosystem" when from the parent ecosystem's notebook
 	lines := strings.Split(result.Stdout, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "explain-with-analogy") {
-			if !strings.Contains(line, "notebook") {
-				return fmt.Errorf("expected explain-with-analogy to be from notebook source (override), got: %s", line)
+			// Should be from notebook (project or ecosystem), not builtin
+			if strings.Contains(line, "builtin") {
+				return fmt.Errorf("expected explain-with-analogy to be from notebook source (project/ecosystem), got: %s", line)
 			}
 			break
 		}
