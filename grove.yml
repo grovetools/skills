@@ -1,6 +1,7 @@
-name: grove-skills
+name: skills
 description: Agent Skill Integrations
 type: go
+managed: true
 binary:
-  name: grove-skills
-  path: ./bin/grove-skills
+  name: skills
+  path: ./bin/skills

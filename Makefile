@@ -1,7 +1,7 @@
-# Makefile for grove-skills (grove-skills)
+# Makefile for skills
 
-BINARY_NAME=grove-skills
-E2E_BINARY_NAME=tend-grove-skills
+BINARY_NAME=skills
+E2E_BINARY_NAME=tend-skills
 BIN_DIR=bin
 VERSION_PKG=github.com/mattsolo1/grove-core/version
 
