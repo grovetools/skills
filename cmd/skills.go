@@ -8,11 +8,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mattsolo1/grove-core/git"
-	"github.com/mattsolo1/grove-core/logging"
-	"github.com/mattsolo1/grove-core/pkg/workspace"
-	"github.com/mattsolo1/grove-skills/pkg/service"
-	"github.com/mattsolo1/grove-skills/pkg/skills"
+	"github.com/grovetools/core/git"
+	"github.com/grovetools/core/logging"
+	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/skills/pkg/service"
+	"github.com/grovetools/skills/pkg/skills"
 	"github.com/spf13/cobra"
 )
 

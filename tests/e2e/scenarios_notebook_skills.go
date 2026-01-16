@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mattsolo1/grove-tend/pkg/command"
-	"github.com/mattsolo1/grove-tend/pkg/fs"
-	"github.com/mattsolo1/grove-tend/pkg/git"
-	"github.com/mattsolo1/grove-tend/pkg/harness"
+	"github.com/grovetools/tend/pkg/command"
+	"github.com/grovetools/tend/pkg/fs"
+	"github.com/grovetools/tend/pkg/git"
+	"github.com/grovetools/tend/pkg/harness"
 )
 
 // NotebookSkillsScenario tests skill discovery and syncing from notebook directories.

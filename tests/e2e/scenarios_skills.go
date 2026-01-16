@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mattsolo1/grove-tend/pkg/command"
-	"github.com/mattsolo1/grove-tend/pkg/harness"
+	"github.com/grovetools/tend/pkg/command"
+	"github.com/grovetools/tend/pkg/harness"
 )
 
 func SkillsScenario() *harness.Scenario {

@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/mattsolo1/grove-core/pkg/workspace"
-	"github.com/mattsolo1/grove-skills/pkg/service"
+	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/skills/pkg/service"
 	"gopkg.in/yaml.v3"
 )
 

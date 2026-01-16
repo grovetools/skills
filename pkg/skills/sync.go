@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mattsolo1/grove-core/config"
-	"github.com/mattsolo1/grove-core/fs"
-	"github.com/mattsolo1/grove-core/pkg/workspace"
-	"github.com/mattsolo1/grove-skills/pkg/service"
+	"github.com/grovetools/core/config"
+	"github.com/grovetools/core/fs"
+	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/skills/pkg/service"
 )
 
 // SyncSkillsToDirectory copies all discoverable skills to a destination directory.
