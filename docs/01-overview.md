@@ -1,5 +1,3 @@
-<!-- DOCGEN:OVERVIEW:START -->
-
 `skills` is a command-line tool for managing and distributing context-aware instructions (skills) to local AI agent runtimes. It aggregates prompt fragments from multiple sources—embedded defaults, user configurations, and workspace notebooks—and synchronizes them to provider-specific directories.
 
 ## Core Mechanisms
@@ -32,11 +30,3 @@
     *   **`--prune`**: Removes skills from the destination that no longer exist in the source.
 *   **`skills remove`**: Deletes an installed skill from the specified scope.
 
-<!-- DOCGEN:OVERVIEW:END -->
-
-<!-- DOCGEN:TOC:START -->
-
-See the [documentation](docs/) for detailed usage instructions:
-- [Overview](docs/01-overview.md)
-
-<!-- DOCGEN:TOC:END -->
