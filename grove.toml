@@ -1,0 +1,8 @@
+name = "skills"
+description = "Agent Skill Integrations"
+type = "go"
+managed = true
+
+[binary]
+name = "skills"
+path = "./bin/skills"
