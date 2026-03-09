@@ -31,6 +31,7 @@ func newSkillsCmd() *cobra.Command {
 	cmd.AddCommand(newSkillsListCmd())
 	cmd.AddCommand(newSkillsSyncCmd())
 	cmd.AddCommand(newSkillsRemoveCmd())
+	cmd.AddCommand(newSkillsTreeCmd())
 
 	return cmd
 }
@@ -406,6 +407,85 @@ func getInstallPathForDir(provider, scope, baseDir string) (string, error) {
 	}
 
 	return filepath.Join(pathParts...), nil
+}
+
+func newSkillsTreeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "tree <name>",
+		Short: "Visualize the dependency tree of a skill",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			svc := GetService()
+
+			// Map for path-based cycle detection
+			visited := make(map[string]bool)
+			return printTree(svc, name, "", true, true, visited)
+		},
+	}
+	return cmd
+}
+
+func printTree(svc *service.Service, name string, prefix string, isLast bool, isRoot bool, visited map[string]bool) error {
+	if visited[name] {
+		fmt.Printf("%s└── %s (circular dependency detected)\n", prefix, name)
+		return nil
+	}
+
+	// Mark current node as visited for this traversal path
+	visited[name] = true
+	defer func() { visited[name] = false }()
+
+	skillFiles, err := skills.GetSkillWithService(svc, name)
+	if err != nil {
+		if isRoot {
+			fmt.Printf("%s (not found)\n", name)
+		} else {
+			marker := "├── "
+			if isLast {
+				marker = "└── "
+			}
+			fmt.Printf("%s%s%s (not found)\n", prefix, marker, name)
+		}
+		return nil
+	}
+
+	content, ok := skillFiles["SKILL.md"]
+	if !ok {
+		return fmt.Errorf("skill '%s' missing SKILL.md", name)
+	}
+
+	metadata, err := skills.ParseSkillFrontmatter(content)
+	if err != nil {
+		return fmt.Errorf("skill '%s' has invalid frontmatter: %w", name, err)
+	}
+
+	// Format the root node differently from child nodes
+	if isRoot {
+		fmt.Printf("%s (%s)\n", name, metadata.Description)
+	} else {
+		marker := "├── "
+		if isLast {
+			marker = "└── "
+		}
+		fmt.Printf("%s%s%s (%s)\n", prefix, marker, name, metadata.Description)
+	}
+
+	// Calculate prefix for children
+	childPrefix := prefix
+	if !isRoot {
+		if isLast {
+			childPrefix += "    "
+		} else {
+			childPrefix += "│   "
+		}
+	}
+
+	for i, req := range metadata.Requires {
+		printTree(svc, req, childPrefix, i == len(metadata.Requires)-1, false, visited)
+	}
+
+	return nil
 }
 
 func newSkillsRemoveCmd() *cobra.Command {

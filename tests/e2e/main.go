@@ -16,6 +16,7 @@ func main() {
 		BasicScenario(),
 		SkillsScenario(),
 		NotebookSkillsScenario(),
+		TreeScenario(),
 	}
 
 	// Execute the custom tend application with our scenarios

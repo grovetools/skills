@@ -32,24 +32,23 @@ func NotebookSkillsScenario() *harness.Scenario {
 func setupNotebookSkillsEnvironment(ctx *harness.Context) error {
 	// 1. Configure a centralized notebook in the sandboxed home directory
 	notebookRoot := filepath.Join(ctx.HomeDir(), ".grove", "notebooks", "nb")
-	globalYAML := fmt.Sprintf(`
-version: "1.0"
-groves:
-  e2e-projects:
-    path: "%s"
-notebooks:
-  rules:
-    default: "main"
-  definitions:
-    main:
-      root_dir: "%s"
+	globalTOML := fmt.Sprintf(`version = "1.0"
+
+[groves.e2e-projects]
+path = "%s"
+
+[notebooks.rules]
+default = "main"
+
+[notebooks.definitions.main]
+root_dir = "%s"
 `, ctx.RootDir, notebookRoot)
 
 	globalConfigDir := filepath.Join(ctx.HomeDir(), ".config", "grove")
 	if err := fs.CreateDir(globalConfigDir); err != nil {
 		return err
 	}
-	if err := fs.WriteString(filepath.Join(globalConfigDir, "grove.yml"), globalYAML); err != nil {
+	if err := fs.WriteString(filepath.Join(globalConfigDir, "grove.toml"), globalTOML); err != nil {
 		return err
 	}
 
@@ -59,7 +58,9 @@ notebooks:
 	projectBDir := filepath.Join(ecosystemDir, "project-B")
 
 	// -- Ecosystem Root --
-	if err := fs.WriteString(filepath.Join(ecosystemDir, "grove.yml"), "name: test-ecosystem\nworkspaces: ['project-A', 'project-B']"); err != nil {
+	if err := fs.WriteString(filepath.Join(ecosystemDir, "grove.toml"), `name = "test-ecosystem"
+workspaces = ["project-A", "project-B"]
+`); err != nil {
 		return err
 	}
 	repoEco, err := git.SetupTestRepo(ecosystemDir)
@@ -71,7 +72,9 @@ notebooks:
 	if err := fs.CreateDir(projectADir); err != nil {
 		return err
 	}
-	if err := fs.WriteString(filepath.Join(projectADir, "grove.yml"), "name: project-A\nversion: '1.0'"); err != nil {
+	if err := fs.WriteString(filepath.Join(projectADir, "grove.toml"), `name = "project-A"
+version = "1.0"
+`); err != nil {
 		return err
 	}
 
@@ -79,7 +82,9 @@ notebooks:
 	if err := fs.CreateDir(projectBDir); err != nil {
 		return err
 	}
-	if err := fs.WriteString(filepath.Join(projectBDir, "grove.yml"), "name: project-B\nversion: '1.0'"); err != nil {
+	if err := fs.WriteString(filepath.Join(projectBDir, "grove.toml"), `name = "project-B"
+version = "1.0"
+`); err != nil {
 		return err
 	}
 

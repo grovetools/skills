@@ -19,10 +19,15 @@ func FindBinary() (string, error) {
 	}
 
 	// Try common locations relative to test execution directory
+	// Note: The binary may be named "skills" or "grove-skills" depending on build
 	candidates := []string{
+		"./bin/skills",
 		"./bin/grove-skills",
+		"../bin/skills",
 		"../bin/grove-skills",
+		"../../bin/skills",
 		"../../bin/grove-skills",
+		"../../../bin/skills",
 		"../../../bin/grove-skills",
 	}
 

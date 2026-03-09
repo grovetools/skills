@@ -20,8 +20,10 @@ var embeddedSkillsFS embed.FS
 
 // SkillMetadata represents the YAML frontmatter of a SKILL.md file
 type SkillMetadata struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Requires    []string `yaml:"requires,omitempty"`
+	Domain      string   `yaml:"domain,omitempty"`
 }
 
 // ValidationError represents a skill validation error
@@ -39,7 +41,7 @@ var nameRegex = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // ValidateSkillContent validates the content of a SKILL.md file
 func ValidateSkillContent(content []byte, expectedName string) error {
-	metadata, err := parseSkillFrontmatter(content)
+	metadata, err := ParseSkillFrontmatter(content)
 	if err != nil {
 		return fmt.Errorf("failed to parse SKILL.md frontmatter: %w", err)
 	}
@@ -75,8 +77,8 @@ func ValidateSkillContent(content []byte, expectedName string) error {
 	return nil
 }
 
-// parseSkillFrontmatter extracts and parses YAML frontmatter from SKILL.md content
-func parseSkillFrontmatter(content []byte) (*SkillMetadata, error) {
+// ParseSkillFrontmatter extracts and parses YAML frontmatter from SKILL.md content
+func ParseSkillFrontmatter(content []byte) (*SkillMetadata, error) {
 	// Frontmatter must start with "---" on line 1
 	if !bytes.HasPrefix(content, []byte("---")) {
 		return nil, fmt.Errorf("SKILL.md must start with '---' frontmatter delimiter")
