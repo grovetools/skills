@@ -61,6 +61,8 @@ func Initialize() (*cobra.Command, error) {
 	rootCmd.AddCommand(newSkillsSyncCmd())
 	rootCmd.AddCommand(newSkillsRemoveCmd())
 	rootCmd.AddCommand(newSkillsTreeCmd())
+	rootCmd.AddCommand(newSkillsSearchCmd())
+	rootCmd.AddCommand(newSkillsIntegrateCmd())
 
 	// Keep "skills" as an alias for backwards compatibility
 	rootCmd.AddCommand(newSkillsCmd())

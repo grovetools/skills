@@ -17,6 +17,9 @@ func main() {
 		SkillsScenario(),
 		NotebookSkillsScenario(),
 		TreeScenario(),
+		// Agentic workflows
+		SkillsSearchScenario(),
+		SkillsIntegrateScenario(),
 	}
 
 	// Execute the custom tend application with our scenarios

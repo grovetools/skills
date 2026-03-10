@@ -69,7 +69,7 @@ func newSkillsInstallCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&scope, "scope", "user", "Installation scope ('project', 'user', 'repo-root', or 'admin' for codex).")
+	cmd.Flags().StringVar(&scope, "scope", "user", "Installation scope ('project', 'user', 'ecosystem', 'repo-root', or 'admin' for codex).")
 	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode').")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing skill without prompting.")
 	cmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "Skip SKILL.md validation.")
@@ -77,7 +77,7 @@ func newSkillsInstallCmd() *cobra.Command {
 }
 
 func newSkillsListCmd() *cobra.Command {
-	var showPath bool
+	var showPath, grouped bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available skills from all sources",
@@ -87,7 +87,9 @@ Skills are discovered from:
   - User skills: ~/.config/grove/skills
   - Ecosystem skills: notebook skills for the parent ecosystem
   - Project skills: notebook skills for the current project
-  - Built-in skills: embedded in the grove-skills binary`,
+  - Built-in skills: embedded in the grove-skills binary
+
+Use --grouped to organize skills by their domain field.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := GetService()
 
@@ -126,6 +128,11 @@ Skills are discovered from:
 			}
 			sort.Strings(names)
 
+			// Grouped output mode
+			if grouped {
+				return listSkillsGrouped(svc, sources, names)
+			}
+
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			if showPath {
 				fmt.Fprintln(w, "SKILL\tSOURCE\tPATH")
@@ -144,7 +151,64 @@ Skills are discovered from:
 		},
 	}
 	cmd.Flags().BoolVar(&showPath, "path", false, "Show the full path to each skill")
+	cmd.Flags().BoolVar(&grouped, "grouped", false, "Group skills by domain")
 	return cmd
+}
+
+// listSkillsGrouped displays skills organized by their domain field.
+func listSkillsGrouped(svc *service.Service, sources map[string]skills.SkillSource, names []string) error {
+	// Map of domain -> list of skills
+	domainSkills := make(map[string][]string)
+
+	for _, name := range names {
+		src := sources[name]
+		domain := "uncategorized"
+
+		// Read skill content to get domain
+		var content []byte
+		var err error
+		if src.Type == skills.SourceTypeBuiltin {
+			files, e := skills.GetSkill(name)
+			if e == nil {
+				content = files["SKILL.md"]
+			}
+		} else {
+			content, err = os.ReadFile(filepath.Join(src.Path, "SKILL.md"))
+			if err != nil {
+				content = nil
+			}
+		}
+
+		if content != nil {
+			meta, err := skills.ParseSkillFrontmatter(content)
+			if err == nil && meta.Domain != "" {
+				domain = meta.Domain
+			}
+		}
+
+		domainSkills[domain] = append(domainSkills[domain], name)
+	}
+
+	// Sort domain names
+	var domains []string
+	for d := range domainSkills {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+
+	// Print grouped output
+	for i, domain := range domains {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("## %s\n", domain)
+		for _, name := range domainSkills[domain] {
+			src := sources[name]
+			fmt.Printf("  %s (%s)\n", name, src.Type)
+		}
+	}
+
+	return nil
 }
 
 // listSkillsLegacy falls back to the old listing behavior when not in a workspace
@@ -335,7 +399,7 @@ notebook will be synced to all child projects within the ecosystem.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&scope, "scope", "user", "Sync scope ('project', 'user', 'repo-root', or 'admin' for codex).")
+	cmd.Flags().StringVar(&scope, "scope", "user", "Sync scope ('project', 'user', 'ecosystem', 'repo-root', or 'admin' for codex).")
 	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode').")
 	cmd.Flags().BoolVar(&prune, "prune", false, "Remove skills from destination that no longer exist in source.")
 	cmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "Skip SKILL.md validation.")
@@ -376,6 +440,20 @@ func getInstallPathForDir(provider, scope, baseDir string) (string, error) {
 	case "project":
 		// Use the provided baseDir as the project root
 		pathParts = append(pathParts, baseDir)
+	case "ecosystem":
+		node, err := workspace.GetProjectByPath(baseDir)
+		if err != nil {
+			return "", fmt.Errorf("could not determine workspace context for ecosystem scope: %w", err)
+		}
+		// Prefer RootEcosystemPath if set - this means we're in a child project of an ecosystem
+		if node.RootEcosystemPath != "" {
+			pathParts = append(pathParts, node.RootEcosystemPath)
+		} else if node.Kind == workspace.KindEcosystemRoot || node.Kind == workspace.KindEcosystemWorktree {
+			// This is an actual ecosystem root - use its path
+			pathParts = append(pathParts, node.Path)
+		} else {
+			return "", fmt.Errorf("directory %s is not part of an ecosystem (kind=%s)", baseDir, node.Kind)
+		}
 	case "repo-root":
 		gitRoot, err := git.GetGitRoot(baseDir)
 		if err != nil {
@@ -388,7 +466,7 @@ func getInstallPathForDir(provider, scope, baseDir string) (string, error) {
 		}
 		pathParts = append(pathParts, "/etc")
 	default:
-		return "", fmt.Errorf("invalid scope: %s (valid: 'user', 'project', 'repo-root', 'admin')", scope)
+		return "", fmt.Errorf("invalid scope: %s (valid: 'user', 'project', 'ecosystem', 'repo-root', 'admin')", scope)
 	}
 
 	switch strings.ToLower(provider) {
@@ -516,7 +594,7 @@ func newSkillsRemoveCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to remove from ('project', 'user', 'repo-root', or 'admin' for codex).")
+	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to remove from ('project', 'user', 'ecosystem', 'repo-root', or 'admin' for codex).")
 	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode').")
 	return cmd
 }
@@ -534,6 +612,24 @@ func getInstallPath(provider, scope string) (string, error) {
 	case "project":
 		// Uses current working directory, so pathParts remains empty initially
 		pathParts = []string{}
+	case "ecosystem":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		node, err := workspace.GetProjectByPath(cwd)
+		if err != nil {
+			return "", fmt.Errorf("could not determine workspace context for ecosystem scope: %w", err)
+		}
+		// Prefer RootEcosystemPath if set - this means we're in a child project of an ecosystem
+		if node.RootEcosystemPath != "" {
+			pathParts = append(pathParts, node.RootEcosystemPath)
+		} else if node.Kind == workspace.KindEcosystemRoot || node.Kind == workspace.KindEcosystemWorktree {
+			// This is an actual ecosystem root - use its path
+			pathParts = append(pathParts, node.Path)
+		} else {
+			return "", fmt.Errorf("current directory is not part of an ecosystem (kind=%s)", node.Kind)
+		}
 	case "repo-root":
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -551,7 +647,7 @@ func getInstallPath(provider, scope string) (string, error) {
 		// For admin scope, the path is absolute under /etc
 		pathParts = append(pathParts, "/etc")
 	default:
-		return "", fmt.Errorf("invalid scope: %s (valid: 'user', 'project', 'repo-root', 'admin')", scope)
+		return "", fmt.Errorf("invalid scope: %s (valid: 'user', 'project', 'ecosystem', 'repo-root', 'admin')", scope)
 	}
 
 	switch strings.ToLower(provider) {
