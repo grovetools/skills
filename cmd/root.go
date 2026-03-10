@@ -63,6 +63,7 @@ func Initialize() (*cobra.Command, error) {
 	rootCmd.AddCommand(newSkillsSearchCmd())
 	rootCmd.AddCommand(newSkillsIntegrateCmd())
 	rootCmd.AddCommand(newSkillsValidateCmd())
+	rootCmd.AddCommand(newTuiCmd())
 
 	// Keep "skills" as an alias for backwards compatibility
 	rootCmd.AddCommand(newSkillsCmd())

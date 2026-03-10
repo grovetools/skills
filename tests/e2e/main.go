@@ -20,6 +20,8 @@ func main() {
 		// Agentic workflows
 		SkillsSearchScenario(),
 		SkillsIntegrateScenario(),
+		// TUI Scenarios
+		TUIScenario(),
 	}
 
 	// Execute the custom tend application with our scenarios
