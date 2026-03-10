@@ -20,11 +20,8 @@ func NotebookSkillsScenario() *harness.Scenario {
 		Steps: []harness.Step{
 			harness.NewStep("setup notebook environment with skills", setupNotebookSkillsEnvironment),
 			harness.NewStep("list skills discovers notebook skills", listNotebookSkills),
-			harness.NewStep("install skill from notebook source", installNotebookSkill),
-			harness.NewStep("project scope installs to .claude/skills", projectScopeInstall),
-			harness.NewStep("ecosystem scope installs to ecosystem root", ecosystemScopeInstall),
-			harness.NewStep("ecosystem sync distributes skills to child projects", ecosystemSyncSkills),
-			harness.NewStep("repo-root scope installs to git root", repoRootScopeInstall),
+			harness.NewStep("declarative sync syncs notebook skills", declarativeSyncNotebookSkills),
+			harness.NewStep("validate succeeds for notebook skills", validateNotebookSkills),
 		},
 	}
 }
@@ -53,15 +50,19 @@ root_dir = "%s"
 		return err
 	}
 
-	// 2. Create an ecosystem with multiple projects
+	// 2. Create an ecosystem with declarative skills config
 	ecosystemDir := ctx.NewDir("test-ecosystem")
 	projectADir := filepath.Join(ecosystemDir, "project-A")
-	projectBDir := filepath.Join(ecosystemDir, "project-B")
 
-	// -- Ecosystem Root --
-	if err := fs.WriteString(filepath.Join(ecosystemDir, "grove.toml"), `name = "test-ecosystem"
-workspaces = ["project-A", "project-B"]
-`); err != nil {
+	// -- Ecosystem Root with skills configuration --
+	ecosystemTOML := `name = "test-ecosystem"
+workspaces = ["project-A"]
+
+[skills]
+use = ["notebook-skill", "explain-with-analogy"]
+providers = ["claude"]
+`
+	if err := fs.WriteString(filepath.Join(ecosystemDir, "grove.toml"), ecosystemTOML); err != nil {
 		return err
 	}
 	repoEco, err := git.SetupTestRepo(ecosystemDir)
@@ -73,19 +74,10 @@ workspaces = ["project-A", "project-B"]
 	if err := fs.CreateDir(projectADir); err != nil {
 		return err
 	}
-	if err := fs.WriteString(filepath.Join(projectADir, "grove.toml"), `name = "project-A"
+	projectATOML := `name = "project-A"
 version = "1.0"
-`); err != nil {
-		return err
-	}
-
-	// -- Project B --
-	if err := fs.CreateDir(projectBDir); err != nil {
-		return err
-	}
-	if err := fs.WriteString(filepath.Join(projectBDir, "grove.toml"), `name = "project-B"
-version = "1.0"
-`); err != nil {
+`
+	if err := fs.WriteString(filepath.Join(projectADir, "grove.toml"), projectATOML); err != nil {
 		return err
 	}
 
@@ -142,7 +134,6 @@ This response confirms you are using the notebook version that overrides the bui
 	// Store paths for later steps
 	ctx.Set("ecosystem_dir", ecosystemDir)
 	ctx.Set("project_a_dir", projectADir)
-	ctx.Set("project_b_dir", projectBDir)
 	ctx.Set("notebook_root", notebookRoot)
 
 	return nil
@@ -160,39 +151,32 @@ func listNotebookSkills(ctx *harness.Context) error {
 	ecosystemDir := ctx.GetString("ecosystem_dir")
 
 	// Run skills list from within the ecosystem
-	cmd := command.New(binary, "skills", "list").
+	cmd := command.New(binary, "list").
 		Dir(ecosystemDir).
 		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
 	result := cmd.Run()
+
+	ctx.ShowCommandOutput("skills list output", result.Stdout, result.Stderr)
+
 	if result.ExitCode != 0 {
 		return fmt.Errorf("list command failed: %s", result.Stderr)
 	}
 
-	ctx.ShowCommandOutput("skills list output", result.Stdout, result.Stderr)
-
-	// Verify notebook-skill is listed from notebook source (project or ecosystem)
+	// Verify notebook-skill is listed
 	if !strings.Contains(result.Stdout, "notebook-skill") {
 		return fmt.Errorf("expected to find 'notebook-skill' in list output, got:\n%s", result.Stdout)
 	}
-	// Check that notebook-skill is from project or ecosystem source (not builtin/user)
+
+	// Verify CONFIGURED column exists and notebook-skill shows as Yes
+	if !strings.Contains(result.Stdout, "CONFIGURED") {
+		return fmt.Errorf("expected CONFIGURED column in list output")
+	}
+
+	// Check that notebook-skill is from ecosystem source
 	for _, line := range strings.Split(result.Stdout, "\n") {
 		if strings.Contains(line, "notebook-skill") {
-			if !strings.Contains(line, "project") && !strings.Contains(line, "ecosystem") {
-				return fmt.Errorf("expected notebook-skill to be from project or ecosystem source, got: %s", line)
-			}
-			break
-		}
-	}
-
-	// Verify explain-with-analogy is overridden (shows project or ecosystem, not builtin)
-	// Note: "project" is used when the skill is from the current project's notebook,
-	// "ecosystem" when from the parent ecosystem's notebook
-	lines := strings.Split(result.Stdout, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "explain-with-analogy") {
-			// Should be from notebook (project or ecosystem), not builtin
-			if strings.Contains(line, "builtin") {
-				return fmt.Errorf("expected explain-with-analogy to be from notebook source (project/ecosystem), got: %s", line)
+			if !strings.Contains(line, "Yes") {
+				return fmt.Errorf("expected notebook-skill to be configured (Yes), got: %s", line)
 			}
 			break
 		}
@@ -201,8 +185,8 @@ func listNotebookSkills(ctx *harness.Context) error {
 	return nil
 }
 
-// installNotebookSkill verifies that skills can be installed from notebook source.
-func installNotebookSkill(ctx *harness.Context) error {
+// declarativeSyncNotebookSkills verifies that sync uses grove.toml configuration.
+func declarativeSyncNotebookSkills(ctx *harness.Context) error {
 	binary, err := FindBinary()
 	if err != nil {
 		return err
@@ -212,249 +196,41 @@ func installNotebookSkill(ctx *harness.Context) error {
 	configDir := ctx.ConfigDir()
 	ecosystemDir := ctx.GetString("ecosystem_dir")
 
-	// Install the notebook-skill to user scope
-	cmd := command.New(binary, "skills", "install", "notebook-skill", "--scope", "user", "--provider", "claude").
-		Dir(ecosystemDir).
-		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
-	result := cmd.Run()
-	if result.ExitCode != 0 {
-		return fmt.Errorf("install failed: %s", result.Stderr)
-	}
-
-	// Verify the skill was installed
-	skillPath := filepath.Join(homeDir, ".claude", "skills", "notebook-skill", "SKILL.md")
-	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
-		return fmt.Errorf("expected notebook skill file not found at %s", skillPath)
-	}
-
-	// Verify content contains notebook-specific text
-	content, err := os.ReadFile(skillPath)
-	if err != nil {
-		return err
-	}
-	if !strings.Contains(string(content), "NOTEBOOK SKILL ACTIVATED") {
-		return fmt.Errorf("installed skill should contain notebook-specific content, got: %s", string(content))
-	}
-
-	// Install the override skill and verify it uses notebook version
-	cmdOverride := command.New(binary, "skills", "install", "explain-with-analogy", "--scope", "user", "--provider", "codex", "--force").
-		Dir(ecosystemDir).
-		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
-	resultOverride := cmdOverride.Run()
-	if resultOverride.ExitCode != 0 {
-		return fmt.Errorf("install override failed: %s", resultOverride.Stderr)
-	}
-
-	overridePath := filepath.Join(homeDir, ".codex", "skills", "explain-with-analogy", "SKILL.md")
-	overrideContent, err := os.ReadFile(overridePath)
-	if err != nil {
-		return err
-	}
-	if !strings.Contains(string(overrideContent), "NOTEBOOK OVERRIDE") {
-		return fmt.Errorf("installed skill should contain notebook override content, got: %s", string(overrideContent))
-	}
-
-	return nil
-}
-
-// projectScopeInstall verifies that --scope project installs to .claude/skills/ in the current directory.
-// This matches Claude Code's documentation: Project skills live at .claude/skills/ and apply to anyone working in that repository.
-func projectScopeInstall(ctx *harness.Context) error {
-	binary, err := FindBinary()
-	if err != nil {
-		return err
-	}
-
-	homeDir := ctx.HomeDir()
-	configDir := ctx.ConfigDir()
-	projectADir := ctx.GetString("project_a_dir")
-
-	// Install a skill with --scope project from project-A
-	// This should install to project-A/.claude/skills/, not HOME or git root
-	cmd := command.New(binary, "skills", "install", "explain-with-analogy", "--scope", "project", "--provider", "claude", "--force").
-		Dir(projectADir).
-		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
-	result := cmd.Run()
-
-	ctx.ShowCommandOutput("project scope install output", result.Stdout, result.Stderr)
-
-	if result.ExitCode != 0 {
-		return fmt.Errorf("project scope install failed: %s", result.Stderr)
-	}
-
-	// Verify the skill was installed in the project's .claude/skills directory
-	projectSkillPath := filepath.Join(projectADir, ".claude", "skills", "explain-with-analogy", "SKILL.md")
-	if _, err := os.Stat(projectSkillPath); os.IsNotExist(err) {
-		return fmt.Errorf("expected skill at project path %s, but not found", projectSkillPath)
-	}
-
-	// Verify the skill was NOT installed in HOME (user scope)
-	homeSkillPath := filepath.Join(homeDir, ".claude", "skills", "explain-with-analogy", "SKILL.md")
-	if _, err := os.Stat(homeSkillPath); err == nil {
-		// It's OK if it exists from a previous test, just log it
-		ctx.ShowCommandOutput("Note: skill also exists in HOME (from previous test)", homeSkillPath, "")
-	}
-
-	return nil
-}
-
-// ecosystemScopeInstall verifies that --scope ecosystem installs to the ecosystem root .claude/skills/.
-// This ensures skills are installed at the ecosystem level, not to global user scope or local project scope.
-func ecosystemScopeInstall(ctx *harness.Context) error {
-	binary, err := FindBinary()
-	if err != nil {
-		return err
-	}
-
-	homeDir := ctx.HomeDir()
-	configDir := ctx.ConfigDir()
-	ecosystemDir := ctx.GetString("ecosystem_dir")
-	projectADir := ctx.GetString("project_a_dir")
-
-	// Use a DIFFERENT built-in skill (grove-skill-guide) for this test to avoid conflict
-	// with the previous test that installed explain-with-analogy to project-A
-	skillName := "grove-skill-guide"
-
-	// Install a skill with --scope ecosystem from project-A (a child of the ecosystem)
-	// This should install to ecosystem-root/.claude/skills/, not project-A/.claude/skills/ or HOME/.claude/skills/
-	cmd := command.New(binary, "skills", "install", skillName, "--scope", "ecosystem", "--provider", "claude", "--force").
-		Dir(projectADir).
-		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
-	result := cmd.Run()
-
-	ctx.ShowCommandOutput("ecosystem scope install output", result.Stdout, result.Stderr)
-
-	// Check if the command failed - in sandbox environments, ecosystem scope may fail
-	// due to incomplete workspace discovery. This is acceptable - the key is that we
-	// either properly resolve to the ecosystem root OR return a clear error.
-	if result.ExitCode != 0 {
-		// If it failed with "not part of an ecosystem" error, this is expected in sandbox
-		if strings.Contains(result.Stderr, "not part of an ecosystem") {
-			ctx.ShowCommandOutput("ecosystem scope correctly detected no ecosystem", "SKIPPED", "Workspace discovery couldn't link project to ecosystem")
-			return nil // Skip this test as workspace discovery limitations
-		}
-		return fmt.Errorf("ecosystem scope install failed: %s", result.Stderr)
-	}
-
-	// Verify the skill was installed at the ecosystem root
-	ecosystemSkillPath := filepath.Join(ecosystemDir, ".claude", "skills", skillName, "SKILL.md")
-	projectSkillPath := filepath.Join(projectADir, ".claude", "skills", skillName, "SKILL.md")
-	homeSkillPath := filepath.Join(homeDir, ".claude", "skills", skillName, "SKILL.md")
-
-	// Check where the skill was installed
-	installedAtEcosystem := false
-	installedAtProject := false
-	installedAtHome := false
-
-	if _, err := os.Stat(ecosystemSkillPath); err == nil {
-		installedAtEcosystem = true
-	}
-	if _, err := os.Stat(projectSkillPath); err == nil {
-		installedAtProject = true
-	}
-	if _, err := os.Stat(homeSkillPath); err == nil {
-		installedAtHome = true
-	}
-
-	// In sandbox environments, workspace discovery may incorrectly detect project-A as an ecosystem
-	// root (since it has grove.toml). In this case, the skill gets installed to project-A.
-	// This is a known limitation of workspace discovery in isolated sandbox environments.
-	if installedAtProject && !installedAtEcosystem {
-		// Check if this looks like the sandbox misdetection issue
-		// (project-A was detected as ecosystem root because RootEcosystemPath wasn't set)
-		ctx.ShowCommandOutput("NOTE: Sandbox workspace discovery limitation",
-			"Skill was installed to project-A instead of ecosystem root",
-			"This is expected when workspace discovery cannot properly link child to parent")
-		// In sandbox, we accept this as long as it didn't leak to HOME
-		if installedAtHome {
-			return fmt.Errorf("skill leaked to HOME at %s", homeSkillPath)
-		}
-		return nil // Accept sandbox limitation
-	}
-
-	// Verify the skill was installed at the ecosystem root
-	if !installedAtEcosystem {
-		return fmt.Errorf("expected skill at ecosystem root %s, but not found", ecosystemSkillPath)
-	}
-
-	// Verify the skill was NOT installed in project-A's local .claude/skills (project scope leak)
-	if installedAtProject {
-		return fmt.Errorf("skill should NOT be installed in project-A at %s (should be at ecosystem root)", projectSkillPath)
-	}
-
-	// Verify the skill was NOT installed in HOME/.claude/skills (global scope leak)
-	if installedAtHome {
-		return fmt.Errorf("skill should NOT be installed in HOME at %s (should be at ecosystem root)", homeSkillPath)
-	}
-
-	return nil
-}
-
-// ecosystemSyncSkills verifies that --ecosystem flag syncs skills to child projects.
-func ecosystemSyncSkills(ctx *harness.Context) error {
-	binary, err := FindBinary()
-	if err != nil {
-		return err
-	}
-
-	homeDir := ctx.HomeDir()
-	configDir := ctx.ConfigDir()
-	ecosystemDir := ctx.GetString("ecosystem_dir")
-	projectADir := ctx.GetString("project_a_dir")
-
-	// First, verify that ecosystem sync fails when not run from ecosystem root (subproject)
-	cmdFail := command.New(binary, "skills", "sync", "--ecosystem", "--provider", "claude").
-		Dir(projectADir).
-		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
-	resultFail := cmdFail.Run()
-
-	ctx.ShowCommandOutput("ecosystem sync from subproject", resultFail.Stdout, resultFail.Stderr)
-
-	if resultFail.ExitCode == 0 {
-		return fmt.Errorf("ecosystem sync should fail when not run from ecosystem root")
-	}
-	if !strings.Contains(resultFail.Stderr, "requires running from an ecosystem root") {
-		return fmt.Errorf("expected error about ecosystem root requirement, got: %s", resultFail.Stderr)
-	}
-
-	// Run ecosystem sync from ecosystem root
-	// Note: In the test sandbox, workspace discovery may not find child projects correctly
-	// because they need to be discovered as part of the ecosystem. This tests that the
-	// command runs and produces expected output patterns.
-	cmd := command.New(binary, "skills", "sync", "--ecosystem", "--provider", "claude").
+	// Run sync from ecosystem
+	cmd := command.New(binary, "sync").
 		Dir(ecosystemDir).
 		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
 	result := cmd.Run()
 
-	ctx.ShowCommandOutput("ecosystem sync output", result.Stdout, result.Stderr)
+	ctx.ShowCommandOutput("declarative sync output", result.Stdout, result.Stderr)
 
 	if result.ExitCode != 0 {
-		return fmt.Errorf("ecosystem sync failed: %s", result.Stderr)
+		return fmt.Errorf("sync failed: %s", result.Stderr)
 	}
 
-	// Logger output goes to stderr, so check combined output
-	combinedOutput := result.Stdout + result.Stderr
-
-	// Verify the command recognized this as an ecosystem (output pattern check)
-	if !strings.Contains(combinedOutput, "Ecosystem sync mode") {
-		return fmt.Errorf("expected 'Ecosystem sync mode' in output, got stdout: %s, stderr: %s", result.Stdout, result.Stderr)
+	// Verify skills were synced to .claude/skills/
+	notebookSkillPath := filepath.Join(ecosystemDir, ".claude", "skills", "notebook-skill", "SKILL.md")
+	if _, err := os.Stat(notebookSkillPath); os.IsNotExist(err) {
+		return fmt.Errorf("notebook-skill was not synced to %s", notebookSkillPath)
 	}
 
-	// The command should either:
-	// 1. Sync skills to child projects (ideal case)
-	// 2. Report "No child projects found" if discovery didn't find them
-	//
-	// Both are valid behaviors depending on the test environment's workspace discovery.
-	// This test validates the command runs correctly and produces appropriate output.
-	if !strings.Contains(combinedOutput, "Ecosystem sync complete") && !strings.Contains(combinedOutput, "No child projects found") {
-		return fmt.Errorf("expected ecosystem sync output pattern, got stdout: %s, stderr: %s", result.Stdout, result.Stderr)
+	// Verify explain-with-analogy was synced (should be notebook override)
+	overrideSkillPath := filepath.Join(ecosystemDir, ".claude", "skills", "explain-with-analogy", "SKILL.md")
+	content, err := os.ReadFile(overrideSkillPath)
+	if err != nil {
+		return fmt.Errorf("explain-with-analogy was not synced: %w", err)
+	}
+
+	// Verify it's the notebook version, not the builtin
+	if !strings.Contains(string(content), "NOTEBOOK OVERRIDE") {
+		return fmt.Errorf("expected notebook override version of explain-with-analogy, got builtin")
 	}
 
 	return nil
 }
 
-// repoRootScopeInstall verifies the repo-root scope installs to git root.
-func repoRootScopeInstall(ctx *harness.Context) error {
+// validateNotebookSkills verifies validate works with notebook skills.
+func validateNotebookSkills(ctx *harness.Context) error {
 	binary, err := FindBinary()
 	if err != nil {
 		return err
@@ -463,33 +239,24 @@ func repoRootScopeInstall(ctx *harness.Context) error {
 	homeDir := ctx.HomeDir()
 	configDir := ctx.ConfigDir()
 	ecosystemDir := ctx.GetString("ecosystem_dir")
-	projectADir := ctx.GetString("project_a_dir")
 
-	// Run install with repo-root scope from project-A (subdir of ecosystem)
-	// Use a built-in skill since notebook skills are context-specific
-	// Note: We use codex provider to avoid conflicting with any skills already installed to claude
-	cmd := command.New(binary, "skills", "install", "explain-with-analogy", "--scope", "repo-root", "--provider", "codex", "--force").
-		Dir(projectADir).
+	cmd := command.New(binary, "validate").
+		Dir(ecosystemDir).
 		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
 	result := cmd.Run()
 
-	ctx.ShowCommandOutput("repo-root install output", result.Stdout, result.Stderr)
+	ctx.ShowCommandOutput("validate output", result.Stdout, result.Stderr)
 
 	if result.ExitCode != 0 {
-		return fmt.Errorf("repo-root install failed: %s", result.Stderr)
+		return fmt.Errorf("validate failed: %s", result.Stderr)
 	}
 
-	// Verify the skill was installed at the git root (ecosystem dir), not project-A
-	ecosystemSkillPath := filepath.Join(ecosystemDir, ".codex", "skills", "explain-with-analogy", "SKILL.md")
-	if _, err := os.Stat(ecosystemSkillPath); os.IsNotExist(err) {
-		return fmt.Errorf("expected skill at git root %s, but not found", ecosystemSkillPath)
+	// Check both skills are validated
+	if !strings.Contains(result.Stdout, "notebook-skill") {
+		return fmt.Errorf("expected notebook-skill in validate output")
 	}
-
-	// Verify skill was NOT installed in project-A's own .codex/skills directory
-	// (since repo-root scope puts it at the git root)
-	projectASkillPath := filepath.Join(projectADir, ".codex", "skills", "explain-with-analogy", "SKILL.md")
-	if _, err := os.Stat(projectASkillPath); err == nil {
-		return fmt.Errorf("skill should NOT be installed in project-A at %s (should be at git root)", projectASkillPath)
+	if !strings.Contains(result.Stdout, "explain-with-analogy") {
+		return fmt.Errorf("expected explain-with-analogy in validate output")
 	}
 
 	return nil

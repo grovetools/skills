@@ -7,6 +7,7 @@ import (
 
 	"github.com/grovetools/core/config"
 	"github.com/grovetools/core/fs"
+	"github.com/grovetools/core/logging"
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/skills/pkg/service"
 )
@@ -28,9 +29,9 @@ func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, 
 	// Map: skillName -> sourcePath
 	skillSources := make(map[string]string)
 
-	// 1. User skills from ~/.config/grove/skills
-	userSkillsPath, err := getUserSkillsPath()
-	if err == nil && userSkillsPath != "" {
+	// 1. User skills (respects config user_path)
+	userSkillsPath := getUserSkillsPathWithConfig(svc)
+	if userSkillsPath != "" {
 		collectSkillsFromDir(userSkillsPath, skillSources)
 	}
 
@@ -86,9 +87,9 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 	// 1. Built-in skills (lowest precedence)
 	addBuiltinSkillSources(sources)
 
-	// 2. User skills
-	userSkillsPath, err := getUserSkillsPath()
-	if err == nil && userSkillsPath != "" {
+	// 2. User skills (respects config user_path)
+	userSkillsPath := getUserSkillsPathWithConfig(svc)
+	if userSkillsPath != "" {
 		addSkillSources(userSkillsPath, SourceTypeUser, sources)
 	}
 
@@ -259,5 +260,102 @@ func NewServiceForNode(node *workspace.WorkspaceNode) (*service.Service, error) 
 
 	return &service.Service{
 		NotebookLocator: locator,
+		Config:          cfg,
 	}, nil
+}
+
+// SyncConfiguredSkills syncs resolved skills to their target provider directories.
+// It writes skills to the provider-specific directory within the git root.
+// If prune is true, skills not in the resolved map are removed from the destination.
+func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, prune bool, logger *logging.PrettyLogger) (int, error) {
+	syncedCount := 0
+	var lastErr error
+
+	// Track what we installed per provider for pruning
+	installedPerProvider := make(map[string]map[string]bool)
+
+	// Sync each skill to its target providers
+	for skillName, r := range resolved {
+		for _, provider := range r.Providers {
+			destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
+			destPath := filepath.Join(destBaseDir, skillName)
+
+			if installedPerProvider[provider] == nil {
+				installedPerProvider[provider] = make(map[string]bool)
+			}
+			installedPerProvider[provider][skillName] = true
+
+			// Ensure base directory exists
+			if err := os.MkdirAll(destBaseDir, 0755); err != nil {
+				lastErr = fmt.Errorf("failed to create directory %s: %w", destBaseDir, err)
+				continue
+			}
+
+			// Remove existing skill directory before writing
+			os.RemoveAll(destPath)
+
+			// Handle builtin vs local skills
+			if r.SourceType == SourceTypeBuiltin {
+				// Extract from embedded FS
+				files, err := readSkillFromFS(embeddedSkillsFS, skillName)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+
+				if err := os.MkdirAll(destPath, 0755); err != nil {
+					lastErr = err
+					continue
+				}
+
+				for relPath, content := range files {
+					filePath := filepath.Join(destPath, relPath)
+					if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+						lastErr = err
+						continue
+					}
+					if err := os.WriteFile(filePath, content, 0644); err != nil {
+						lastErr = err
+						continue
+					}
+				}
+				syncedCount++
+			} else {
+				// Copy from local filesystem
+				if err := fs.CopyDir(r.PhysicalPath, destPath); err != nil {
+					lastErr = fmt.Errorf("failed to copy skill %s: %w", skillName, err)
+				} else {
+					syncedCount++
+				}
+			}
+		}
+	}
+
+	// Prune skills not in config if requested
+	if prune {
+		for provider, validSkills := range installedPerProvider {
+			destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
+			entries, err := os.ReadDir(destBaseDir)
+			if err != nil {
+				continue
+			}
+
+			for _, entry := range entries {
+				if entry.IsDir() && !validSkills[entry.Name()] {
+					pathToRemove := filepath.Join(destBaseDir, entry.Name())
+					if err := os.RemoveAll(pathToRemove); err != nil {
+						if logger != nil {
+							logger.WarnPretty(fmt.Sprintf("Failed to prune skill '%s': %v", entry.Name(), err))
+						}
+					} else {
+						if logger != nil {
+							logger.InfoPretty(fmt.Sprintf("Pruned unconfigured skill: %s (provider: %s)", entry.Name(), provider))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return syncedCount, lastErr
 }

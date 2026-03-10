@@ -101,24 +101,36 @@ func ParseSkillFrontmatter(content []byte) (*SkillMetadata, error) {
 	return &metadata, nil
 }
 
-// getUserSkillsPath returns the path to the user-defined skills directory (~/.config/grove/skills).
-// It respects XDG_CONFIG_HOME if set, otherwise falls back to $HOME/.config
+// getUserSkillsPath returns the path to the user-defined skills directory.
+// It checks config for user_path override, falling back to ~/.config/grove/skills.
+// Deprecated: Use GetUserSkillsPath(cfg) from config.go instead.
 func getUserSkillsPath() (string, error) {
-	var configDir string
+	return getDefaultUserSkillsPath()
+}
 
-	// Check XDG_CONFIG_HOME first
-	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
-		configDir = xdgConfig
-	} else {
-		// Fall back to $HOME/.config
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("could not get user home directory: %w", err)
-		}
-		configDir = filepath.Join(home, ".config")
+// getUserSkillsPathWithConfig returns the user skills path, checking config first.
+func getUserSkillsPathWithConfig(svc *service.Service) string {
+	if svc != nil && svc.Config != nil {
+		return GetUserSkillsPath(svc.Config)
+	}
+	path, _ := getDefaultUserSkillsPath()
+	return path
+}
+
+// ListBuiltinSkills returns a list of all built-in skill names.
+func ListBuiltinSkills() []string {
+	entries, err := fs.ReadDir(embeddedSkillsFS, "data/skills")
+	if err != nil {
+		return nil
 	}
 
-	return filepath.Join(configDir, "grove", "skills"), nil
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
 }
 
 // ListSkills returns a slice of available skill names and a map indicating their source.
@@ -146,8 +158,8 @@ func ListSkillsWithService(svc *service.Service) ([]string, map[string]string, e
 	}
 
 	// 2. Load user skills, overwriting built-in if names conflict
-	userSkillsPath, err := getUserSkillsPath()
-	if err == nil {
+	userSkillsPath := getUserSkillsPathWithConfig(svc)
+	if userSkillsPath != "" {
 		if entries, err := os.ReadDir(userSkillsPath); err == nil {
 			for _, entry := range entries {
 				if entry.IsDir() {
@@ -195,9 +207,9 @@ func GetSkillWithService(svc *service.Service, name string) (map[string][]byte, 
 		}
 	}
 
-	// 2. Try user skills second
-	userSkillsPath, err := getUserSkillsPath()
-	if err == nil {
+	// 2. Try user skills second (respects config user_path)
+	userSkillsPath := getUserSkillsPathWithConfig(svc)
+	if userSkillsPath != "" {
 		skillFiles, err := readSkillFromDisk(filepath.Join(userSkillsPath, name))
 		if err == nil {
 			return skillFiles, nil // Found in user skills

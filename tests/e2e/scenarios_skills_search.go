@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/grovetools/tend/pkg/command"
+	"github.com/grovetools/tend/pkg/fs"
 	"github.com/grovetools/tend/pkg/harness"
 )
 
@@ -155,16 +158,25 @@ func searchFilesOnly(ctx *harness.Context) error {
 	homeDir := ctx.HomeDir()
 	configDir := ctx.ConfigDir()
 
-	// First install a skill to user scope so we have a non-builtin file to find
-	installCmd := command.New(binary, "install", "explain-with-analogy", "--scope", "user", "--provider", "claude", "--force").
-		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
-	installResult := installCmd.Run()
-	if installResult.ExitCode != 0 {
-		return fmt.Errorf("failed to install skill for test: %s", installResult.Stderr)
+	// Create a user-defined skill so we have a non-builtin file to find
+	userSkillDir := filepath.Join(configDir, "grove", "skills", "custom-test-skill")
+	if err := fs.CreateDir(userSkillDir); err != nil {
+		return err
+	}
+	skillContent := `---
+name: custom-test-skill
+description: A test skill for search functionality.
+---
+
+# Test Skill
+
+This is a test skill for the search --files-only test.`
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		return err
 	}
 
 	// Now search with --files-only
-	cmd := command.New(binary, "search", "explain-with-analogy", "--files-only").
+	cmd := command.New(binary, "search", "custom-test-skill", "--files-only").
 		Env("HOME="+homeDir, "XDG_CONFIG_HOME="+configDir)
 	result := cmd.Run()
 
