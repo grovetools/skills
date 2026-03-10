@@ -45,7 +45,7 @@ func newSkillsListCmd() *cobra.Command {
 		Long: `List all available skills from user, ecosystem, and project sources.
 
 Skills are discovered from:
-  - User skills: ~/.config/grove/skills (or skills.user_path)
+  - User skills: ~/.config/grove/skills
   - Ecosystem skills: notebook skills for the parent ecosystem
   - Project skills: notebook skills for the current project
   - Built-in skills: embedded in the grove-skills binary

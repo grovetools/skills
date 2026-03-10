@@ -29,7 +29,7 @@ func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, 
 	// Map: skillName -> sourcePath
 	skillSources := make(map[string]string)
 
-	// 1. User skills (respects config user_path)
+	// 1. User skills
 	userSkillsPath := getUserSkillsPathWithConfig(svc)
 	if userSkillsPath != "" {
 		collectSkillsFromDir(userSkillsPath, skillSources)
@@ -87,7 +87,7 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 	// 1. Built-in skills (lowest precedence)
 	addBuiltinSkillSources(sources)
 
-	// 2. User skills (respects config user_path)
+	// 2. User skills
 	userSkillsPath := getUserSkillsPathWithConfig(svc)
 	if userSkillsPath != "" {
 		addSkillSources(userSkillsPath, SourceTypeUser, sources)

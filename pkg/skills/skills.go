@@ -101,20 +101,28 @@ func ParseSkillFrontmatter(content []byte) (*SkillMetadata, error) {
 	return &metadata, nil
 }
 
-// getUserSkillsPath returns the path to the user-defined skills directory.
-// It checks config for user_path override, falling back to ~/.config/grove/skills.
-// Deprecated: Use GetUserSkillsPath(cfg) from config.go instead.
-func getUserSkillsPath() (string, error) {
-	return getDefaultUserSkillsPath()
+// getUserSkillsPath returns the path to the user-defined skills directory (~/.config/grove/skills).
+func getUserSkillsPath() string {
+	var configDir string
+
+	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+		configDir = xdgConfig
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		configDir = filepath.Join(home, ".config")
+	}
+
+	return filepath.Join(configDir, "grove", "skills")
 }
 
-// getUserSkillsPathWithConfig returns the user skills path, checking config first.
+// getUserSkillsPathWithConfig returns the user skills path.
+// The service parameter is kept for API compatibility but is currently unused.
 func getUserSkillsPathWithConfig(svc *service.Service) string {
-	if svc != nil && svc.Config != nil {
-		return GetUserSkillsPath(svc.Config)
-	}
-	path, _ := getDefaultUserSkillsPath()
-	return path
+	_ = svc // Unused, kept for API compatibility
+	return getUserSkillsPath()
 }
 
 // ListBuiltinSkills returns a list of all built-in skill names.
@@ -207,7 +215,7 @@ func GetSkillWithService(svc *service.Service, name string) (map[string][]byte, 
 		}
 	}
 
-	// 2. Try user skills second (respects config user_path)
+	// 2. Try user skills second
 	userSkillsPath := getUserSkillsPathWithConfig(svc)
 	if userSkillsPath != "" {
 		skillFiles, err := readSkillFromDisk(filepath.Join(userSkillsPath, name))
