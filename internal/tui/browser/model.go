@@ -18,15 +18,17 @@ import (
 )
 
 // DisplayNode represents a single row in the tree display.
-// It can be either a domain header or a skill leaf.
+// It can be either a group header or a skill leaf.
 type DisplayNode struct {
 	Name        string
-	IsDomain    bool
+	IsGroup     bool
 	Prefix      string // Tree prefix (├─, └─, etc.)
+	Group       string // Group name this skill belongs to
 	Domain      string
 	Source      skills.SourceType
 	Description string
 	Path        string
+	Workspace   string // Workspace name for workspace-derived skills
 }
 
 // Model represents the skills browser TUI state.
@@ -54,6 +56,9 @@ type Model struct {
 
 	// Right pane viewport
 	viewport viewport.Model
+
+	// Pane focus state
+	previewFocused bool
 
 	// Cached skill details
 	cachedSkillName string
@@ -110,21 +115,30 @@ func loadSkillsCmd(svc *service.Service) tea.Cmd {
 	}
 }
 
+// skillEntry represents a skill for grouping and display.
+type skillEntry struct {
+	name      string
+	source    skills.SourceType
+	desc      string
+	path      string
+	workspace string
+	domain    string
+	group     string
+}
+
 // buildDisplayNodes creates the tree structure for display.
 func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
+	// Collect all skills from various sources
+	var allSkills []skillEntry
+
+	// 1. Get builtin and user skills (non-workspace sources)
 	sources := skills.ListSkillSources(svc, nil)
-	if len(sources) == 0 {
-		return nil, nil
-	}
-
-	// Group skills by domain
-	domainSkills := make(map[string][]struct {
-		name   string
-		source skills.SkillSource
-		desc   string
-	})
-
 	for name, src := range sources {
+		// Skip ecosystem and project sources - we'll get workspace skills separately
+		if src.Type == skills.SourceTypeEcosystem || src.Type == skills.SourceTypeProject {
+			continue
+		}
+
 		domain := "uncategorized"
 		desc := ""
 
@@ -152,32 +166,91 @@ func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
 			}
 		}
 
-		domainSkills[domain] = append(domainSkills[domain], struct {
-			name   string
-			source skills.SkillSource
-			desc   string
-		}{name: name, source: src, desc: desc})
+		// Determine group based on source type and domain
+		group := "uncategorized"
+		if domain != "" && domain != "uncategorized" {
+			group = domain
+		} else if src.Type == skills.SourceTypeUser {
+			group = "User Skills"
+		} else if src.Type == skills.SourceTypeBuiltin {
+			group = "Built-in Skills"
+		}
+
+		allSkills = append(allSkills, skillEntry{
+			name:   name,
+			source: src.Type,
+			desc:   desc,
+			path:   src.Path,
+			domain: domain,
+			group:  group,
+		})
 	}
 
-	// Sort domains
-	var domains []string
-	for d := range domainSkills {
-		domains = append(domains, d)
+	// 2. Get all workspace skills
+	workspaceSkills, _ := skills.ListAllWorkspaceSkills(svc)
+	for _, ws := range workspaceSkills {
+		domain := "uncategorized"
+		desc := ws.Description
+
+		// Try to get domain from SKILL.md
+		skillMDPath := filepath.Join(ws.Path, "SKILL.md")
+		if content, err := os.ReadFile(skillMDPath); err == nil {
+			if meta, err := skills.ParseSkillFrontmatter(content); err == nil {
+				if meta.Domain != "" {
+					domain = meta.Domain
+				}
+				if meta.Description != "" {
+					desc = meta.Description
+				}
+			}
+		}
+
+		// Group workspace skills by their workspace name
+		group := ws.Workspace
+		if group == "" {
+			group = "Workspace Skills"
+		}
+
+		allSkills = append(allSkills, skillEntry{
+			name:      ws.Name,
+			source:    skills.SourceTypeProject, // Use Project for workspace skills
+			desc:      desc,
+			path:      ws.Path,
+			workspace: ws.Workspace,
+			domain:    domain,
+			group:     group,
+		})
 	}
-	sort.Strings(domains)
+
+	if len(allSkills) == 0 {
+		return nil, nil
+	}
+
+	// Group skills by their determined group
+	groupSkills := make(map[string][]skillEntry)
+	for _, s := range allSkills {
+		groupSkills[s.group] = append(groupSkills[s.group], s)
+	}
+
+	// Sort groups
+	var groups []string
+	for g := range groupSkills {
+		groups = append(groups, g)
+	}
+	sort.Strings(groups)
 
 	// Build flat node list with tree prefixes
 	var nodes []DisplayNode
-	for _, domain := range domains {
-		skillList := domainSkills[domain]
+	for _, groupName := range groups {
+		skillList := groupSkills[groupName]
 		sort.Slice(skillList, func(i, j int) bool {
 			return skillList[i].name < skillList[j].name
 		})
 
-		// Add domain header
+		// Add group header
 		nodes = append(nodes, DisplayNode{
-			Name:     domain,
-			IsDomain: true,
+			Name:    groupName,
+			IsGroup: true,
 		})
 
 		// Add skills with tree prefixes
@@ -188,12 +261,14 @@ func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
 			}
 			nodes = append(nodes, DisplayNode{
 				Name:        s.name,
-				IsDomain:    false,
+				IsGroup:     false,
 				Prefix:      prefix,
-				Domain:      domain,
-				Source:      s.source.Type,
+				Group:       s.group,
+				Domain:      s.domain,
+				Source:      s.source,
 				Description: s.desc,
-				Path:        s.source.Path,
+				Path:        s.path,
+				Workspace:   s.workspace,
 			})
 		}
 	}
@@ -201,13 +276,13 @@ func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
 	return nodes, nil
 }
 
-// SelectedSkill returns the currently selected skill node, or nil if a domain is selected.
+// SelectedSkill returns the currently selected skill node, or nil if a group is selected.
 func (m *Model) SelectedSkill() *DisplayNode {
 	if m.cursor < 0 || m.cursor >= len(m.nodes) {
 		return nil
 	}
 	node := &m.nodes[m.cursor]
-	if node.IsDomain {
+	if node.IsGroup {
 		return nil
 	}
 	return node
@@ -221,12 +296,12 @@ func (m *Model) filteredNodes() []DisplayNode {
 
 	var filtered []DisplayNode
 	for _, node := range m.nodes {
-		// Always include domain headers if they have matching children
-		if node.IsDomain {
+		// Always include group headers if they have matching children
+		if node.IsGroup {
 			// Check if any children match
 			hasMatch := false
 			for _, n := range m.nodes {
-				if !n.IsDomain && n.Domain == node.Name {
+				if !n.IsGroup && n.Group == node.Name {
 					if matchesFilter(n, m.filterText) {
 						hasMatch = true
 						break
@@ -297,4 +372,34 @@ func bytesContains(s, substr []byte) bool {
 		}
 	}
 	return false
+}
+
+// getLeftPaneWidth dynamically calculates the ideal width for the left tree pane.
+func (m *Model) getLeftPaneWidth() int {
+	maxWidth := 25
+	for _, n := range m.nodes {
+		var w int
+		if n.IsGroup {
+			w = len(n.Name) + 4 // group name + padding
+		} else {
+			w = len(n.Prefix) + len(n.Name) + 4 // prefix + name + indicator
+			// Only show workspace tag if different from group
+			if n.Workspace != "" && n.Workspace != n.Group {
+				w += len(" ["+n.Workspace+"]") + 2
+			}
+		}
+		if w > maxWidth {
+			maxWidth = w
+		}
+	}
+
+	maxWidth += 4 // extra padding
+	maxAllowed := m.width * 40 / 100
+	if maxAllowed < 30 {
+		maxAllowed = 30 // Minimum reasonable width
+	}
+	if maxWidth > maxAllowed {
+		return maxAllowed
+	}
+	return maxWidth
 }

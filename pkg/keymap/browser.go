@@ -43,18 +43,18 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 }
 
 // ShortHelp returns a minimal set of keybindings to show in the footer.
-// Per design requirements, only Help and Quit are shown.
+// Only Quit is returned since the help component already shows "Press ? for help".
 func (k BrowserKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Help, k.Quit}
+	return []key.Binding{k.Quit}
 }
 
 // FullHelp returns all keybindings organized by category.
 func (k BrowserKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
-		{k.Install, k.Remove, k.Sync},
+		{k.Edit, k.Install, k.Remove, k.Sync, k.CopyPath},
 		{k.Search, k.ClearSearch},
-		{k.Help, k.Quit},
+		{k.SwitchView, k.Help, k.Quit},
 	}
 }
 
@@ -63,11 +63,16 @@ func (k BrowserKeyMap) Sections() []keymap.Section {
 	return []keymap.Section{
 		k.Base.NavigationSection(),
 		keymap.NewSection(keymap.SectionActions,
+			k.Edit,
 			k.Install,
 			k.Remove,
 			k.Sync,
+			k.CopyPath,
 		),
 		k.Base.SearchSection(),
+		keymap.NewSection(keymap.SectionView,
+			k.SwitchView,
+		),
 		k.Base.SystemSection(),
 	}
 }

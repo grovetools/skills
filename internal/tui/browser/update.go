@@ -1,6 +1,11 @@
 package browser
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +30,79 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle search input mode
 		if m.searching {
 			return m.updateSearchMode(msg)
+		}
+
+		// Handle preview pane focus mode - route navigation keys to viewport
+		if m.previewFocused {
+			// Handle sequence keys (gg, G) for viewport navigation
+			result, idx := m.sequence.Process(msg, m.keys.Top, m.keys.Bottom)
+			switch result {
+			case keymap.SequenceMatch:
+				m.sequence.Clear()
+				switch idx {
+				case 0: // Top (gg)
+					m.viewport.GotoTop()
+				case 1: // Bottom (G)
+					m.viewport.GotoBottom()
+				}
+				return m, nil
+			case keymap.SequencePending:
+				return m, nil
+			}
+			m.sequence.Clear()
+
+			switch {
+			case key.Matches(msg, m.keys.SwitchView), key.Matches(msg, m.keys.Back):
+				// Tab or Esc returns focus to left pane
+				m.previewFocused = false
+				return m, nil
+			case msg.Type == tea.KeyShiftTab:
+				// Shift+Tab also returns focus to left pane
+				m.previewFocused = false
+				return m, nil
+			case key.Matches(msg, m.keys.Quit):
+				return m, tea.Quit
+			case key.Matches(msg, m.keys.Help):
+				m.help.Toggle()
+				return m, nil
+			case msg.Type == tea.KeyCtrlD:
+				// Half-page down
+				m.viewport.HalfViewDown()
+				return m, nil
+			case msg.Type == tea.KeyCtrlU:
+				// Half-page up
+				m.viewport.HalfViewUp()
+				return m, nil
+			case msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'j':
+				// Scroll down one line
+				m.viewport.LineDown(1)
+				return m, nil
+			case msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'k':
+				// Scroll up one line
+				m.viewport.LineUp(1)
+				return m, nil
+			case msg.Type == tea.KeyDown:
+				// Arrow down
+				m.viewport.LineDown(1)
+				return m, nil
+			case msg.Type == tea.KeyUp:
+				// Arrow up
+				m.viewport.LineUp(1)
+				return m, nil
+			case key.Matches(msg, m.keys.PageDown):
+				// Page down
+				m.viewport.ViewDown()
+				return m, nil
+			case key.Matches(msg, m.keys.PageUp):
+				// Page up
+				m.viewport.ViewUp()
+				return m, nil
+			default:
+				// Route all other keys to the viewport
+				var cmd tea.Cmd
+				m.viewport, cmd = m.viewport.Update(msg)
+				return m, cmd
+			}
 		}
 
 		// Handle sequence keys (gg, etc.)
@@ -67,6 +145,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.nodes = msg.nodes
 			if len(m.nodes) > 0 {
 				m.statusMsg = ""
+				// Update viewport width now that we know the left pane width
+				if m.ready {
+					m.viewport.Width = m.rightPaneWidth()
+				}
 				// Update viewport with first skill
 				m.updateViewportContent()
 			} else {
@@ -91,6 +173,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.message
 		}
 		// Reload skills after remove
+		return m, loadSkillsCmd(m.service)
+
+	case editCompleteMsg:
+		if msg.err != nil {
+			m.errorMsg = "Edit failed: " + msg.err.Error()
+		}
+		// Reload skills after edit to refresh any changes
 		return m, loadSkillsCmd(m.service)
 	}
 
@@ -175,6 +264,37 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// TODO: Implement install dialog
 		m.statusMsg = "Install not yet implemented"
 		return m, nil
+
+	case key.Matches(msg, m.keys.SwitchView), msg.Type == tea.KeyShiftTab:
+		// Tab or Shift+Tab switches focus to preview pane
+		m.previewFocused = true
+		return m, nil
+
+	case key.Matches(msg, m.keys.CopyPath):
+		skill := m.SelectedSkill()
+		if skill != nil {
+			var path string
+			if skill.Source == skills.SourceTypeBuiltin {
+				path = skill.Name + " (builtin)"
+			} else {
+				path = filepath.Join(skill.Path, "SKILL.md")
+			}
+			if err := clipboard.WriteAll(path); err != nil {
+				m.statusMsg = "Copy failed: " + err.Error()
+			} else {
+				m.statusMsg = "Copied: " + path
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Edit), key.Matches(msg, m.keys.Confirm):
+		skill := m.SelectedSkill()
+		if skill != nil && skill.Source != skills.SourceTypeBuiltin {
+			return m, editSkillCmd(skill)
+		} else if skill != nil {
+			m.statusMsg = "Cannot edit builtin skills"
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -226,22 +346,35 @@ func (m *Model) updateViewportContent() {
 		return
 	}
 
-	// Use cached content if available
-	if skill.Name == m.cachedSkillName {
+	// Use cached content if available (use path as cache key for workspace skills)
+	cacheKey := skill.Name
+	if skill.Path != "" {
+		cacheKey = skill.Path
+	}
+	if cacheKey == m.cachedSkillName {
 		return
 	}
 
-	m.cachedSkillName = skill.Name
+	m.cachedSkillName = cacheKey
 
 	// Build tree string
 	treeStr, _ := skills.BuildDependencyTreeString(m.service, skill.Name)
 	m.cachedTree = treeStr
 
-	// Get skill content
+	// Get skill content - use path directly for workspace skills
 	var content []byte
-	files, err := skills.GetSkillWithService(m.service, skill.Name)
-	if err == nil {
-		content = files["SKILL.md"]
+	if skill.Path != "" && skill.Workspace != "" {
+		// Workspace skill - read directly from path
+		data, err := os.ReadFile(filepath.Join(skill.Path, "SKILL.md"))
+		if err == nil {
+			content = data
+		}
+	} else {
+		// Builtin or user skill - use standard lookup
+		files, err := skills.GetSkillWithService(m.service, skill.Name)
+		if err == nil {
+			content = files["SKILL.md"]
+		}
 	}
 	m.cachedContent = string(content)
 
@@ -277,27 +410,55 @@ func removeSkillCmd(name string) tea.Cmd {
 	}
 }
 
+// editSkillCmd opens the skill's SKILL.md file in the user's editor.
+func editSkillCmd(skill *DisplayNode) tea.Cmd {
+	skillPath := filepath.Join(skill.Path, "SKILL.md")
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	return tea.ExecProcess(exec.Command(editor, skillPath), func(err error) tea.Msg {
+		if err != nil {
+			return editCompleteMsg{err: err}
+		}
+		return editCompleteMsg{}
+	})
+}
+
+// editCompleteMsg indicates edit operation completed.
+type editCompleteMsg struct {
+	err error
+}
+
 // newViewport creates a new viewport for the right pane.
 func newViewport(width, height int) viewport.Model {
-	// Content height = total height - header(2) - footer(2)
-	contentHeight := height - 4
+	// Content height = total height - header(2) - footer(2) - padding(2) - border(2)
+	contentHeight := height - 8
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
-	vp := viewport.New(width/2, contentHeight)
+	// Start with placeholder width, it will be updated once skills load
+	vp := viewport.New(30, contentHeight)
 	vp.SetContent("Select a skill to view details")
 	return vp
 }
 
 // rightPaneWidth returns the width of the right pane.
 func (m *Model) rightPaneWidth() int {
-	return m.width / 2
+	effectiveWidth := m.width - 4 // Account for outer padding
+	leftWidth := m.getLeftPaneWidth()
+	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
+	return rightWidth - 6                         // Account for border (2) + padding (2) + safety margin (2)
 }
 
 // viewportHeight returns the height available for the viewport.
 func (m *Model) viewportHeight() int {
-	// Content height = total height - header(2) - footer(2)
-	contentHeight := m.height - 4
+	// effectiveHeight = m.height - 2 (outer padding)
+	// contentHeight = effectiveHeight - 4 (header + footer) = m.height - 6
+	// viewport height = contentHeight - 2 (border top + bottom) = m.height - 8
+	contentHeight := m.height - 8
 	if contentHeight < 1 {
 		contentHeight = 1
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/grovetools/core/tui/theme"
 )
 
 // View renders the TUI.
@@ -19,8 +20,8 @@ func (m Model) View() string {
 		return m.renderLoading()
 	}
 
-	// Main two-pane layout
-	return m.renderMainView()
+	// Main two-pane layout with padding
+	return lipgloss.NewStyle().Padding(1, 2).Render(m.renderMainView())
 }
 
 // renderLoading renders the loading state.
@@ -34,23 +35,27 @@ func (m Model) renderLoading() string {
 
 // renderMainView renders the main two-pane layout.
 func (m Model) renderMainView() string {
-	// Calculate pane widths
-	leftWidth := m.width / 2
-	rightWidth := m.width - leftWidth - 3 // Account for divider
+	// Account for padding (4 horizontal = 2 left + 2 right, 2 vertical = 1 top + 1 bottom)
+	effectiveWidth := m.width - 4
+	effectiveHeight := m.height - 2
+
+	// Calculate pane widths dynamically based on content
+	leftWidth := m.getLeftPaneWidth()
+	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
 
 	// Calculate content height (total height minus header and footer)
 	// Header: 2 lines (title + separator)
 	// Footer: 2 lines (separator + status)
-	contentHeight := m.height - 4
+	contentHeight := effectiveHeight - 4
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
 
 	// Build sections
-	header := m.renderHeader()
+	header := m.renderHeader(effectiveWidth)
 	leftPane := m.renderLeftPane(leftWidth, contentHeight)
 	rightPane := m.renderRightPane(rightWidth, contentHeight)
-	footer := m.renderFooter()
+	footer := m.renderFooter(effectiveWidth)
 
 	// Join panes horizontally with a divider
 	// Build divider line by line to match the content height
@@ -72,9 +77,12 @@ func (m Model) renderMainView() string {
 }
 
 // renderHeader renders the title bar.
-func (m Model) renderHeader() string {
-	// Use Bold style for title (Header style may add margins)
-	title := m.theme.Bold.Render("Skills Browser")
+func (m Model) renderHeader(width int) string {
+	// Use Bold style for title with cyan color for consistency
+	title := lipgloss.NewStyle().
+		Foreground(m.theme.Colors.Cyan).
+		Bold(true).
+		Render("Skills Browser")
 
 	// Right-aligned search indicator
 	var searchInfo string
@@ -83,13 +91,13 @@ func (m Model) renderHeader() string {
 	}
 
 	// Build header line
-	gap := m.width - lipgloss.Width(title) - lipgloss.Width(searchInfo) - 2
+	gap := width - lipgloss.Width(title) - lipgloss.Width(searchInfo)
 	if gap < 0 {
 		gap = 0
 	}
 
 	header := title + strings.Repeat(" ", gap) + searchInfo
-	separator := m.theme.Muted.Render(strings.Repeat("─", m.width))
+	separator := m.theme.Muted.Render(strings.Repeat("─", width))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, separator)
 }
@@ -132,25 +140,59 @@ func (m Model) renderLeftPane(width int, height int) string {
 	return style.Render(content)
 }
 
-// renderNode renders a single node (domain or skill).
+// renderNode renders a single node (group or skill).
 func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string {
 	var line string
-
-	if node.IsDomain {
-		// Domain header - no selection indicator
-		line = m.theme.Bold.Render(node.Name)
-	} else {
-		// Skill with tree prefix
-		prefix := m.theme.Muted.Render(node.Prefix)
-		line = prefix + node.Name
-	}
-
-	// Selection indicator
 	var indicator string
-	if selected {
-		indicator = m.theme.Selected.Render("▶ ")
+
+	if node.IsGroup {
+		// Group header - cyan and bold
+		groupStyle := lipgloss.NewStyle().
+			Foreground(m.theme.Colors.Cyan).
+			Bold(true)
+
+		if selected {
+			if m.previewFocused {
+				indicator = m.theme.Muted.Render(theme.IconArrowRightBold + " ")
+				line = m.theme.Muted.Render(node.Name)
+			} else {
+				indicator = m.theme.Highlight.Render(theme.IconArrowRightBold + " ")
+				line = groupStyle.Render(node.Name)
+			}
+		} else {
+			indicator = "  "
+			line = groupStyle.Render(node.Name)
+		}
 	} else {
-		indicator = "  "
+		// Skill with tree prefix (faint muted)
+		prefix := m.theme.Muted.Faint(true).Render(node.Prefix)
+
+		// Build skill name with optional workspace tag (only show if different from group)
+		skillName := node.Name
+		if node.Workspace != "" && node.Workspace != node.Group {
+			skillName = skillName + " " + m.theme.Muted.Render("["+node.Workspace+"]")
+		}
+
+		if selected {
+			// Use highlight style (orange, no background) with arrow icon
+			if m.previewFocused {
+				// When preview is focused, dim the left pane selection
+				indicator = m.theme.Muted.Render(theme.IconArrowRightBold + " ")
+				line = prefix + m.theme.Muted.Render(node.Name)
+				if node.Workspace != "" && node.Workspace != node.Group {
+					line = line + " " + m.theme.Muted.Faint(true).Render("["+node.Workspace+"]")
+				}
+			} else {
+				indicator = m.theme.Highlight.Render(theme.IconArrowRightBold + " ")
+				line = prefix + m.theme.Highlight.Render(node.Name)
+				if node.Workspace != "" && node.Workspace != node.Group {
+					line = line + " " + m.theme.Muted.Render("["+node.Workspace+"]")
+				}
+			}
+		} else {
+			indicator = "  "
+			line = prefix + skillName
+		}
 	}
 
 	// Truncate if needed
@@ -174,10 +216,19 @@ func (m Model) renderRightPane(width int, height int) string {
 	// Use viewport content
 	content := m.viewport.View()
 
+	// Determine border color based on focus state
+	borderColor := m.theme.Colors.Border
+	if m.previewFocused {
+		borderColor = m.theme.Colors.Orange
+	}
+
+	// Apply rounded border with focus-dependent color
+	// Don't set Height - let content determine height, border adds to it
 	style := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		MaxHeight(height)
+		Width(width - 4). // Account for border (2) and padding (2)
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor)
 
 	return style.Render(content)
 }
@@ -186,58 +237,85 @@ func (m Model) renderRightPane(width int, height int) string {
 func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	var sb strings.Builder
 
-	// Header
-	sb.WriteString(m.theme.Header.Render(skill.Name))
+	// Get the content width for wrapping (viewport width minus some padding)
+	contentWidth := m.viewport.Width - 2
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
+	// Helper to wrap text
+	wrapText := func(text string) string {
+		return lipgloss.NewStyle().Width(contentWidth).Render(text)
+	}
+
+	// Header - use highlight color for skill name
+	sb.WriteString(m.theme.Highlight.Render(skill.Name))
 	sb.WriteString("\n\n")
 
-	// Metadata
-	sb.WriteString(m.theme.Muted.Render("Source: "))
-	sb.WriteString(string(skill.Source))
+	// Metadata section with colored labels
+	labelStyle := m.theme.Muted
+	valueStyle := lipgloss.NewStyle()
+
+	sb.WriteString(labelStyle.Render("Source: "))
+	sb.WriteString(valueStyle.Render(string(skill.Source)))
 	sb.WriteString("\n")
 
-	sb.WriteString(m.theme.Muted.Render("Domain: "))
-	sb.WriteString(skill.Domain)
+	sb.WriteString(labelStyle.Render("Domain: "))
+	sb.WriteString(valueStyle.Render(skill.Domain))
 	sb.WriteString("\n")
+
+	if skill.Workspace != "" {
+		sb.WriteString(labelStyle.Render("Workspace: "))
+		sb.WriteString(lipgloss.NewStyle().Foreground(m.theme.Colors.Blue).Render(skill.Workspace))
+		sb.WriteString("\n")
+	}
 
 	if skill.Path != "" && skill.Path != "(builtin)" {
-		sb.WriteString(m.theme.Muted.Render("Path: "))
-		sb.WriteString(skill.Path)
+		sb.WriteString(labelStyle.Render("Path: "))
+		sb.WriteString(wrapText(skill.Path))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
 
+	// Section header style
+	sectionStyle := lipgloss.NewStyle().
+		Foreground(m.theme.Colors.Cyan).
+		Bold(true)
+
 	// Description
 	if skill.Description != "" {
-		sb.WriteString(m.theme.Bold.Render("Description"))
+		sb.WriteString(sectionStyle.Render("Description"))
 		sb.WriteString("\n")
-		sb.WriteString(skill.Description)
+		sb.WriteString(wrapText(skill.Description))
 		sb.WriteString("\n\n")
 	}
 
 	// Dependencies tree
 	if m.cachedTree != "" {
-		sb.WriteString(m.theme.Bold.Render("Dependencies"))
+		sb.WriteString(sectionStyle.Render("Dependencies"))
 		sb.WriteString("\n")
-		sb.WriteString(m.cachedTree)
+		// Color the tree markers with green
+		treeLines := strings.Split(m.cachedTree, "\n")
+		for _, line := range treeLines {
+			// Replace tree markers with colored versions
+			colored := strings.ReplaceAll(line, "├─", lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("├─"))
+			colored = strings.ReplaceAll(colored, "└─", lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("└─"))
+			colored = strings.ReplaceAll(colored, "│", lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("│"))
+			sb.WriteString(wrapText(colored))
+			sb.WriteString("\n")
+		}
 		sb.WriteString("\n")
 	}
 
-	// Preview (raw SKILL.md content)
+	// Preview (full SKILL.md content - viewport handles scrolling)
 	if m.cachedContent != "" {
-		sb.WriteString(m.theme.Bold.Render("Preview"))
+		sb.WriteString(sectionStyle.Render("Preview"))
 		sb.WriteString("\n")
-		// Show first 20 lines of content
+		// Show all content - let viewport handle scrolling
 		lines := strings.Split(m.cachedContent, "\n")
-		maxLines := 20
-		if len(lines) < maxLines {
-			maxLines = len(lines)
-		}
-		for i := 0; i < maxLines; i++ {
-			sb.WriteString(m.theme.Muted.Render(lines[i]))
+		for _, line := range lines {
+			sb.WriteString(wrapText(m.theme.Muted.Render(line)))
 			sb.WriteString("\n")
-		}
-		if len(lines) > 20 {
-			sb.WriteString(m.theme.Muted.Render("..."))
 		}
 	}
 
@@ -245,15 +323,15 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 }
 
 // renderFooter renders the status bar and help hints.
-func (m Model) renderFooter() string {
-	separator := m.theme.Muted.Render(strings.Repeat("─", m.width))
+func (m Model) renderFooter(width int) string {
+	separator := m.theme.Muted.Render(strings.Repeat("─", width))
 
 	// Status line
 	var status string
 	nodes := m.filteredNodes()
 	skillCount := 0
 	for _, n := range nodes {
-		if !n.IsDomain {
+		if !n.IsGroup {
 			skillCount++
 		}
 	}
@@ -269,6 +347,8 @@ func (m Model) renderFooter() string {
 	var helpText string
 	if m.searching {
 		helpText = m.theme.Muted.Render("Type to search • Enter to confirm • Esc to cancel")
+	} else if m.previewFocused {
+		helpText = m.theme.Muted.Render("Tab to switch • j/k C-d/u gg/G to scroll")
 	} else {
 		helpText = m.help.View()
 	}
