@@ -28,6 +28,20 @@ func GetGlobalConfigPath() string {
 // ToggleSkillInConfig surgically toggles a skill in the `use` array of a grove.toml file.
 // If the file or [skills] block does not exist, it creates them.
 func ToggleSkillInConfig(tomlPath, skillName string) error {
+	return toggleSkillInSection(tomlPath, skillName, "[skills]")
+}
+
+// ToggleUserProjectSkillInConfig toggles a skill in the user's global config,
+// scoped to a specific project. This allows users to configure project-specific
+// skills that live in their dotfiles rather than the project's grove.toml.
+func ToggleUserProjectSkillInConfig(tomlPath, skillName, projectName string) error {
+	sectionHeader := fmt.Sprintf("[skills.projects.%s]", projectName)
+	return toggleSkillInSection(tomlPath, skillName, sectionHeader)
+}
+
+// toggleSkillInSection toggles a skill in a specific TOML section's use array.
+// The sectionHeader should be the full section name including brackets (e.g., "[skills]").
+func toggleSkillInSection(tomlPath, skillName, sectionHeader string) error {
 	if err := os.MkdirAll(filepath.Dir(tomlPath), 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
@@ -39,52 +53,52 @@ func ToggleSkillInConfig(tomlPath, skillName string) error {
 
 	text := string(content)
 
-	// Ensure [skills] block exists
-	if !strings.Contains(text, "[skills]") {
+	// Ensure section exists
+	if !strings.Contains(text, sectionHeader) {
 		if len(text) > 0 && !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
-		text += fmt.Sprintf("\n[skills]\nuse = [\"%s\"]\n", skillName)
+		text += fmt.Sprintf("\n%s\nuse = [\"%s\"]\n", sectionHeader, skillName)
 		return os.WriteFile(tomlPath, []byte(text), 0644)
 	}
 
-	// Find the [skills] section
-	skillsIdx := strings.Index(text, "[skills]")
-	if skillsIdx == -1 {
-		return fmt.Errorf("internal error: could not find [skills] section")
+	// Find the section
+	sectionIdx := strings.Index(text, sectionHeader)
+	if sectionIdx == -1 {
+		return fmt.Errorf("internal error: could not find %s section", sectionHeader)
 	}
 
-	// Look for `use = [...]` in the skills section
-	// We need to find it after [skills] but potentially before the next section
-	subText := text[skillsIdx:]
+	// Look for `use = [...]` in the section
+	// We need to find it after the section header but potentially before the next section
+	subText := text[sectionIdx:]
 
 	// Find the next section (if any)
 	nextSectionRegex := regexp.MustCompile(`\n\[[^\]]+\]`)
 	nextSectionMatch := nextSectionRegex.FindStringIndex(subText)
 	var sectionEnd int
 	if nextSectionMatch != nil {
-		sectionEnd = skillsIdx + nextSectionMatch[0]
+		sectionEnd = sectionIdx + nextSectionMatch[0]
 	} else {
 		sectionEnd = len(text)
 	}
 
-	sectionText := text[skillsIdx:sectionEnd]
+	sectionText := text[sectionIdx:sectionEnd]
 
 	// Look for use = [...] pattern - handle multiline arrays
 	useRegex := regexp.MustCompile(`(?s)use\s*=\s*\[(.*?)\]`)
 	match := useRegex.FindStringSubmatchIndex(sectionText)
 
 	if match == nil {
-		// Insert `use = [...]` directly after `[skills]`
+		// Insert `use = [...]` directly after section header
 		insertion := fmt.Sprintf("\nuse = [\"%s\"]", skillName)
-		endOfHeader := skillsIdx + len("[skills]")
+		endOfHeader := sectionIdx + len(sectionHeader)
 		newText := text[:endOfHeader] + insertion + text[endOfHeader:]
 		return os.WriteFile(tomlPath, []byte(newText), 0644)
 	}
 
 	// Extract existing skills from the array
-	arrayStart := skillsIdx + match[2]
-	arrayEnd := skillsIdx + match[3]
+	arrayStart := sectionIdx + match[2]
+	arrayEnd := sectionIdx + match[3]
 	arrayContent := text[arrayStart:arrayEnd]
 
 	// Parse array elements
@@ -129,8 +143,8 @@ func ToggleSkillInConfig(tomlPath, skillName string) error {
 	}
 
 	// Replace the entire use = [...] match
-	useMatchStart := skillsIdx + match[0]
-	useMatchEnd := skillsIdx + match[1]
+	useMatchStart := sectionIdx + match[0]
+	useMatchEnd := sectionIdx + match[1]
 	newText := text[:useMatchStart] + newArrayLine + text[useMatchEnd:]
 
 	return os.WriteFile(tomlPath, []byte(newText), 0644)

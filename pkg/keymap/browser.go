@@ -19,6 +19,7 @@ type BrowserKeyMap struct {
 	ToggleProject   key.Binding
 	ToggleEcosystem key.Binding
 	ToggleGlobal    key.Binding
+	ToggleUser      key.Binding
 }
 
 // NewBrowserKeyMap creates a new BrowserKeyMap with the given configuration.
@@ -39,8 +40,8 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 			key.WithHelp("s", "sync"),
 		),
 		ToggleAll: key.NewBinding(
-			key.WithKeys("A"),
-			key.WithHelp("A", "toggle all/active"),
+			key.WithKeys("A", "0"),
+			key.WithHelp("A/0", "toggle all/active"),
 		),
 		ToggleProject: key.NewBinding(
 			key.WithKeys("P"),
@@ -53,6 +54,10 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 		ToggleGlobal: key.NewBinding(
 			key.WithKeys("ctrl+g"),
 			key.WithHelp("ctrl+g", "toggle in global"),
+		),
+		ToggleUser: key.NewBinding(
+			key.WithKeys("U"),
+			key.WithHelp("U", "toggle user preference"),
 		),
 	}
 
@@ -72,7 +77,7 @@ func (k BrowserKeyMap) ShortHelp() []key.Binding {
 func (k BrowserKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
-		{k.Edit, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.Sync},
+		{k.Edit, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.ToggleUser, k.Sync},
 		{k.Search, k.ClearSearch},
 		{k.SwitchView, k.Help, k.Quit},
 	}
@@ -91,6 +96,7 @@ func (k BrowserKeyMap) Sections() []keymap.Section {
 			k.ToggleProject,
 			k.ToggleEcosystem,
 			k.ToggleGlobal,
+			k.ToggleUser,
 			k.CopyPath,
 		),
 		k.Base.SearchSection(),

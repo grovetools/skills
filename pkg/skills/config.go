@@ -33,6 +33,16 @@ type SkillsConfig struct {
 
 	// Dependencies provides explicit configuration for specific skills.
 	Dependencies map[string]DependencyConfig `toml:"dependencies" yaml:"dependencies"`
+
+	// Projects maps project names to user-scoped skill configurations.
+	// Used in global config (~/.config/grove/grove.toml) to define
+	// project-specific skills that live in dotfiles rather than repo config.
+	Projects map[string]*SkillsConfig `toml:"projects" yaml:"projects"`
+
+	// Ecosystems maps ecosystem names to user-scoped skill configurations.
+	// Used in global config (~/.config/grove/grove.toml) to define
+	// ecosystem-specific skills that live in dotfiles rather than repo config.
+	Ecosystems map[string]*SkillsConfig `toml:"ecosystems" yaml:"ecosystems"`
 }
 
 // groveTomlSkills is used to extract the skills block from grove.toml
@@ -41,34 +51,69 @@ type groveTomlSkills struct {
 }
 
 // LoadSkillsConfig extracts the skills configuration from grove.toml in the workspace.
-// It handles inheritance by merging global, ecosystem, and project configurations.
-// Returns nil if no [skills] block is found.
+// It handles inheritance by merging configurations in strict precedence order:
+//
+//  1. global.skills (base)
+//  2. global.skills.ecosystems.<name> (user-scoped ecosystem overrides)
+//  3. ecosystem grove.toml (team-shared ecosystem config)
+//  4. global.skills.projects.<name> (user-scoped project overrides)
+//  5. project grove.toml (team-shared project config, highest precedence)
+//
+// User config merges before actual project/ecosystem config, so team-configured
+// skills take precedence but user preferences fill in the gaps.
 func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*SkillsConfig, error) {
-	// Load global config first (lowest precedence for most settings)
+	// Load global config first (contains both base skills and user-scoped overrides)
 	globalConfig := loadSkillsFromGlobalConfig(cfg)
 
-	// If no node, just return global config
+	// If no node, just return base global config (without project/ecosystem scopes)
 	if node == nil {
-		return applySkillsDefaults(globalConfig), nil
+		return applySkillsDefaults(copySkillsConfig(globalConfig)), nil
 	}
 
-	// Load project-level config
+	// Start with a copy of the base global config
+	merged := copySkillsConfig(globalConfig)
+
+	// Determine ecosystem name for user-scoped lookups
+	var ecoName string
+	if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
+		ecoName = filepath.Base(node.RootEcosystemPath)
+	} else if node.IsEcosystem() {
+		ecoName = node.Name
+	}
+
+	// 1. Apply global ecosystem overrides (user-scoped, from ~/.config/grove/grove.toml)
+	if ecoName != "" && globalConfig != nil && globalConfig.Ecosystems != nil {
+		if ecoCfg, ok := globalConfig.Ecosystems[ecoName]; ok {
+			merged = mergeSkillsConfig(merged, ecoCfg)
+		}
+	}
+
+	// 2. Apply local ecosystem config (team-shared, from ecosystem grove.toml)
+	if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
+		ecosystemConfig, err := LoadSkillsFromPath(node.RootEcosystemPath)
+		if err != nil {
+			return nil, err
+		}
+		merged = mergeSkillsConfig(merged, ecosystemConfig)
+	}
+
+	// 3. Apply global project overrides (user-scoped, from ~/.config/grove/grove.toml)
+	// Use repository name, not worktree name
+	if globalConfig != nil && globalConfig.Projects != nil {
+		projectName := node.Name
+		if node.ParentProjectPath != "" {
+			projectName = filepath.Base(node.ParentProjectPath)
+		}
+		if projCfg, ok := globalConfig.Projects[projectName]; ok {
+			merged = mergeSkillsConfig(merged, projCfg)
+		}
+	}
+
+	// 4. Apply local project config (team-shared, from project grove.toml, highest precedence)
 	projectConfig, err := LoadSkillsFromPath(node.Path)
 	if err != nil {
 		return nil, err
 	}
-
-	// Load ecosystem-level config if we're in an ecosystem
-	var ecosystemConfig *SkillsConfig
-	if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
-		ecosystemConfig, err = LoadSkillsFromPath(node.RootEcosystemPath)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Merge configurations: global -> ecosystem -> project (later wins)
-	merged := mergeSkillsConfig(globalConfig, ecosystemConfig)
 	merged = mergeSkillsConfig(merged, projectConfig)
 
 	return applySkillsDefaults(merged), nil
@@ -81,41 +126,25 @@ func LoadGlobalSkillsConfig(cfg *coreconfig.Config) *SkillsConfig {
 }
 
 // loadSkillsFromGlobalConfig extracts [skills] from the core config's raw data.
+// Uses UnmarshalExtension to safely decode nested projects/ecosystems maps.
 func loadSkillsFromGlobalConfig(cfg *coreconfig.Config) *SkillsConfig {
-	if cfg == nil {
+	if cfg == nil || cfg.Extensions == nil {
 		return nil
 	}
 
-	// Try to get skills config from extensions
-	if cfg.Extensions != nil {
-		if skillsExt, ok := cfg.Extensions["skills"]; ok {
-			if skillsMap, ok := skillsExt.(map[string]interface{}); ok {
-				result := &SkillsConfig{
-					Dependencies: make(map[string]DependencyConfig),
-				}
-
-				if use, ok := skillsMap["use"].([]interface{}); ok {
-					for _, u := range use {
-						if s, ok := u.(string); ok {
-							result.Use = append(result.Use, s)
-						}
-					}
-				}
-
-				if providers, ok := skillsMap["providers"].([]interface{}); ok {
-					for _, p := range providers {
-						if s, ok := p.(string); ok {
-							result.Providers = append(result.Providers, s)
-						}
-					}
-				}
-
-				return result
-			}
-		}
+	var result SkillsConfig
+	if err := cfg.UnmarshalExtension("skills", &result); err != nil {
+		return nil
 	}
 
-	return nil
+	// Return nil if nothing was configured
+	if len(result.Use) == 0 && len(result.Providers) == 0 &&
+		len(result.Dependencies) == 0 && len(result.Projects) == 0 &&
+		len(result.Ecosystems) == 0 {
+		return nil
+	}
+
+	return &result
 }
 
 // applySkillsDefaults applies default values to a SkillsConfig.

@@ -2,10 +2,12 @@ package browser
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/grovetools/core/tui/theme"
+	"github.com/grovetools/skills/pkg/skills"
 )
 
 // View renders the TUI.
@@ -173,25 +175,37 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 		// Skill with tree prefix (faint muted)
 		prefix := m.theme.Muted.Faint(true).Render(node.Prefix)
 
+		// Source type icon (muted)
+		var sourceIcon string
+		switch node.Source {
+		case skills.SourceTypeBuiltin:
+			sourceIcon = m.theme.Muted.Faint(true).Render(theme.IconGear) + " "
+		case skills.SourceTypeUser:
+			sourceIcon = m.theme.Muted.Faint(true).Render(theme.IconHome) + " "
+		case skills.SourceTypeEcosystem, skills.SourceTypeProject:
+			sourceIcon = m.theme.Muted.Faint(true).Render(theme.IconNotebook) + " "
+		}
+
 		// Build skill name with optional workspace tag (only show if different from group)
-		skillName := node.Name
+		skillName := sourceIcon + node.Name
 		if node.Workspace != "" && node.Workspace != node.Group {
 			skillName = skillName + " " + m.theme.Muted.Render("["+node.Workspace+"]")
 		}
 
-		// Build configuration tags
+		// Build configuration indicators (muted icons)
 		var tags string
+		mutedStyle := m.theme.Muted.Faint(true)
 		if node.ConfiguredProject {
-			tags += lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("[P]")
+			tags += " " + mutedStyle.Foreground(m.theme.Colors.Green).Render(theme.IconRepo)
 		}
 		if node.ConfiguredEcosystem {
-			tags += lipgloss.NewStyle().Foreground(m.theme.Colors.Blue).Render("[E]")
+			tags += " " + mutedStyle.Foreground(m.theme.Colors.Blue).Render(theme.IconEcosystem)
 		}
 		if node.ConfiguredGlobal {
-			tags += lipgloss.NewStyle().Foreground(m.theme.Colors.Violet).Render("[G]")
+			tags += " " + mutedStyle.Foreground(m.theme.Colors.Violet).Render(theme.IconEarth)
 		}
-		if tags != "" {
-			tags = " " + tags
+		if node.ConfiguredUserProject || node.ConfiguredUserEcosystem {
+			tags += " " + mutedStyle.Foreground(lipgloss.Color("#d33682")).Render(theme.IconHome)
 		}
 
 		if selected {
@@ -199,14 +213,14 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 			if m.previewFocused {
 				// When preview is focused, dim the left pane selection
 				indicator = m.theme.Muted.Render(theme.IconArrowRightBold + " ")
-				line = prefix + m.theme.Muted.Render(node.Name)
+				line = prefix + sourceIcon + m.theme.Muted.Render(node.Name)
 				if node.Workspace != "" && node.Workspace != node.Group {
 					line = line + " " + m.theme.Muted.Faint(true).Render("["+node.Workspace+"]")
 				}
 				line = line + tags
 			} else {
 				indicator = m.theme.Highlight.Render(theme.IconArrowRightBold + " ")
-				line = prefix + m.theme.Highlight.Render(node.Name)
+				line = prefix + sourceIcon + m.theme.Highlight.Render(node.Name)
 				if node.Workspace != "" && node.Workspace != node.Group {
 					line = line + " " + m.theme.Muted.Render("["+node.Workspace+"]")
 				}
@@ -298,6 +312,56 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 		sb.WriteString(wrapText(skill.Path))
 		sb.WriteString("\n")
 	}
+
+	// Show where this skill is configured with file paths
+	var configSources []string
+	globalConfigPath := skills.GetGlobalConfigPath()
+
+	if skill.ConfiguredProject && m.currentNode != nil {
+		projPath := filepath.Join(m.currentNode.Path, "grove.toml")
+		configSources = append(configSources,
+			lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render(theme.IconRepo+" "+projPath))
+	}
+	if skill.ConfiguredEcosystem && m.currentNode != nil {
+		ecoPath := m.currentNode.RootEcosystemPath
+		if ecoPath == "" && m.currentNode.IsEcosystem() {
+			ecoPath = m.currentNode.Path
+		}
+		if ecoPath != "" {
+			configSources = append(configSources,
+				lipgloss.NewStyle().Foreground(m.theme.Colors.Blue).Render(theme.IconEcosystem+" "+filepath.Join(ecoPath, "grove.toml")))
+		}
+	}
+	if skill.ConfiguredGlobal && globalConfigPath != "" {
+		configSources = append(configSources,
+			lipgloss.NewStyle().Foreground(m.theme.Colors.Violet).Render(theme.IconEarth+" "+globalConfigPath+" [skills]"))
+	}
+	if skill.ConfiguredUserProject && globalConfigPath != "" && m.currentNode != nil {
+		projectName := m.currentNode.Name
+		if m.currentNode.ParentProjectPath != "" {
+			projectName = filepath.Base(m.currentNode.ParentProjectPath)
+		}
+		configSources = append(configSources,
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#d33682")).Render(theme.IconHome+" "+globalConfigPath+" [skills.projects."+projectName+"]"))
+	}
+	if skill.ConfiguredUserEcosystem && globalConfigPath != "" && m.currentNode != nil {
+		var ecoName string
+		if m.currentNode.RootEcosystemPath != "" && m.currentNode.RootEcosystemPath != m.currentNode.Path {
+			ecoName = filepath.Base(m.currentNode.RootEcosystemPath)
+		} else if m.currentNode.IsEcosystem() {
+			ecoName = m.currentNode.Name
+		}
+		if ecoName != "" {
+			configSources = append(configSources,
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#cb4b16")).Render(theme.IconHome+" "+globalConfigPath+" [skills.ecosystems."+ecoName+"]"))
+		}
+	}
+	if len(configSources) > 0 {
+		sb.WriteString(labelStyle.Render("Enabled:\n"))
+		for _, src := range configSources {
+			sb.WriteString("  " + src + "\n")
+		}
+	}
 	sb.WriteString("\n")
 
 	// Section header style
@@ -334,11 +398,92 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	if m.cachedContent != "" {
 		sb.WriteString(sectionStyle.Render("Preview"))
 		sb.WriteString("\n")
-		// Show all content - let viewport handle scrolling
-		lines := strings.Split(m.cachedContent, "\n")
-		for _, line := range lines {
-			sb.WriteString(wrapText(m.theme.Muted.Render(line)))
-			sb.WriteString("\n")
+		// Render content with wrapping applied to the whole block
+		sb.WriteString(m.theme.Muted.Width(contentWidth).Render(m.cachedContent))
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+// renderGroupDetails renders the group details for the viewport.
+func (m *Model) renderGroupDetails(group *DisplayNode) string {
+	var sb strings.Builder
+
+	// Get content width for wrapping
+	contentWidth := m.viewport.Width - 2
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
+	// Header
+	sb.WriteString(m.theme.Highlight.Render(group.Name))
+	sb.WriteString("\n\n")
+
+	labelStyle := m.theme.Muted
+
+	// Get skills in this group
+	groupSkills := m.GetGroupSkills(group.Name)
+
+	// Determine group type and show appropriate info
+	if len(groupSkills) > 0 {
+		firstSkill := groupSkills[0]
+
+		// Show source type
+		sb.WriteString(labelStyle.Render("Source: "))
+		switch firstSkill.Source {
+		case skills.SourceTypeBuiltin:
+			sb.WriteString(theme.IconGear + " Built-in (embedded in binary)\n")
+		case skills.SourceTypeUser:
+			sb.WriteString(theme.IconHome + " User (~/.config/grove/skills/)\n")
+		case skills.SourceTypeEcosystem, skills.SourceTypeProject:
+			sb.WriteString(theme.IconNotebook + " Workspace/Notebook\n")
+			if firstSkill.Workspace != "" {
+				sb.WriteString(labelStyle.Render("Workspace: "))
+				sb.WriteString(firstSkill.Workspace + "\n")
+			}
+		}
+
+		// Show path if available
+		if firstSkill.Path != "" && firstSkill.Source != skills.SourceTypeBuiltin {
+			// Get parent directory (skills directory)
+			skillsDir := filepath.Dir(firstSkill.Path)
+			sb.WriteString(labelStyle.Render("Path: "))
+			sb.WriteString(skillsDir + "\n")
+		}
+
+		sb.WriteString("\n")
+
+		// Show skill count
+		sb.WriteString(labelStyle.Render("Skills: "))
+		sb.WriteString(fmt.Sprintf("%d\n\n", len(groupSkills)))
+
+		// List skills with icons
+		sectionStyle := lipgloss.NewStyle().
+			Foreground(m.theme.Colors.Cyan).
+			Bold(true)
+		sb.WriteString(sectionStyle.Render("Contents"))
+		sb.WriteString("\n")
+
+		for _, s := range groupSkills {
+			var icon string
+			switch s.Source {
+			case skills.SourceTypeBuiltin:
+				icon = theme.IconGear
+			case skills.SourceTypeUser:
+				icon = theme.IconHome
+			default:
+				icon = theme.IconNotebook
+			}
+			desc := s.Description
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("  %s %s - %s\n", icon, s.Name, m.theme.Muted.Render(desc)))
+			} else {
+				sb.WriteString(fmt.Sprintf("  %s %s\n", icon, s.Name))
+			}
 		}
 	}
 

@@ -12,21 +12,29 @@ import (
 func BuildDependencyTreeString(svc *service.Service, name string) (string, error) {
 	var sb strings.Builder
 	visited := make(map[string]bool)
-	err := buildTreeNode(&sb, svc, name, "", true, true, visited)
+	err := buildTreeNode(&sb, svc, name, "", true, true, visited, false)
+	return sb.String(), err
+}
+
+// BuildCompactDependencyTreeString builds a compact tree without descriptions.
+func BuildCompactDependencyTreeString(svc *service.Service, name string) (string, error) {
+	var sb strings.Builder
+	visited := make(map[string]bool)
+	err := buildTreeNode(&sb, svc, name, "", true, true, visited, true)
 	return sb.String(), err
 }
 
 // buildTreeNode recursively builds the tree string.
-func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefix string, isLast bool, isRoot bool, visited map[string]bool) error {
+func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefix string, isLast bool, isRoot bool, visited map[string]bool, compact bool) error {
 	if visited[name] {
 		if isRoot {
-			sb.WriteString(fmt.Sprintf("%s (circular dependency detected)\n", name))
+			sb.WriteString(fmt.Sprintf("%s (circular)\n", name))
 		} else {
 			marker := "├── "
 			if isLast {
 				marker = "└── "
 			}
-			sb.WriteString(fmt.Sprintf("%s%s%s (circular dependency detected)\n", prefix, marker, name))
+			sb.WriteString(fmt.Sprintf("%s%s%s (circular)\n", prefix, marker, name))
 		}
 		return nil
 	}
@@ -61,13 +69,21 @@ func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefi
 
 	// Format the root node differently from child nodes
 	if isRoot {
-		sb.WriteString(fmt.Sprintf("%s (%s)\n", name, metadata.Description))
+		if compact {
+			sb.WriteString(fmt.Sprintf("%s\n", name))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s (%s)\n", name, metadata.Description))
+		}
 	} else {
 		marker := "├── "
 		if isLast {
 			marker = "└── "
 		}
-		sb.WriteString(fmt.Sprintf("%s%s%s (%s)\n", prefix, marker, name, metadata.Description))
+		if compact {
+			sb.WriteString(fmt.Sprintf("%s%s%s\n", prefix, marker, name))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s%s%s (%s)\n", prefix, marker, name, metadata.Description))
+		}
 	}
 
 	// Calculate prefix for children
@@ -81,7 +97,7 @@ func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefi
 	}
 
 	for i, req := range metadata.Requires {
-		buildTreeNode(sb, svc, req, childPrefix, i == len(metadata.Requires)-1, false, visited)
+		buildTreeNode(sb, svc, req, childPrefix, i == len(metadata.Requires)-1, false, visited, compact)
 	}
 
 	return nil

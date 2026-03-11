@@ -356,6 +356,27 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Select a skill first"
 		}
 		return m, nil
+
+	case key.Matches(msg, m.keys.ToggleUser):
+		skill := m.SelectedSkill()
+		if skill != nil && m.currentNode != nil {
+			globalPath := skills.GetGlobalConfigPath()
+			if globalPath != "" {
+				// Use repository name, not worktree name
+				projectName := m.currentNode.Name
+				if m.currentNode.ParentProjectPath != "" {
+					projectName = filepath.Base(m.currentNode.ParentProjectPath)
+				}
+				return m, toggleUserSkillCmd(globalPath, skill.Name, projectName)
+			} else {
+				m.statusMsg = "Could not determine global config path"
+			}
+		} else if skill == nil {
+			m.statusMsg = "Select a skill first"
+		} else {
+			m.statusMsg = "Not in a project context"
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -400,12 +421,23 @@ func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateViewportContent updates the right pane content based on selection.
 func (m *Model) updateViewportContent() {
-	skill := m.SelectedSkill()
-	if skill == nil {
+	node := m.SelectedNode()
+	if node == nil {
 		m.viewport.SetContent("Select a skill to view details")
 		m.cachedSkillName = ""
 		return
 	}
+
+	// Handle group nodes
+	if node.IsGroup {
+		m.cachedSkillName = "group:" + node.Name
+		m.cachedTree = ""
+		m.cachedContent = ""
+		m.viewport.SetContent(m.renderGroupDetails(node))
+		return
+	}
+
+	skill := node
 
 	// Use cached content if available (use path as cache key for workspace skills)
 	cacheKey := skill.Name
@@ -418,8 +450,8 @@ func (m *Model) updateViewportContent() {
 
 	m.cachedSkillName = cacheKey
 
-	// Build tree string
-	treeStr, _ := skills.BuildDependencyTreeString(m.service, skill.Name)
+	// Build tree string (compact, without descriptions)
+	treeStr, _ := skills.BuildCompactDependencyTreeString(m.service, skill.Name)
 	m.cachedTree = treeStr
 
 	// Get skill content - use path directly for workspace skills
@@ -506,6 +538,16 @@ func toggleSkillCmd(tomlPath, skillName, scope string) tea.Cmd {
 			return toggleCompleteMsg{err: err}
 		}
 		return toggleCompleteMsg{message: "Toggled " + skillName + " in " + scope}
+	}
+}
+
+// toggleUserSkillCmd toggles a skill in the user's global config, scoped to a project.
+func toggleUserSkillCmd(tomlPath, skillName, projectName string) tea.Cmd {
+	return func() tea.Msg {
+		if err := skills.ToggleUserProjectSkillInConfig(tomlPath, skillName, projectName); err != nil {
+			return toggleCompleteMsg{err: err}
+		}
+		return toggleCompleteMsg{message: "Toggled " + skillName + " in user preferences for " + projectName}
 	}
 }
 

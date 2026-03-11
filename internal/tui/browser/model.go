@@ -30,9 +30,11 @@ type DisplayNode struct {
 	Description         string
 	Path                string
 	Workspace           string // Workspace name for workspace-derived skills
-	ConfiguredProject   bool   // Skill is configured in project grove.toml
-	ConfiguredEcosystem bool   // Skill is configured in ecosystem grove.toml
-	ConfiguredGlobal    bool   // Skill is configured in global config
+	ConfiguredProject       bool // Skill is configured in project grove.toml
+	ConfiguredEcosystem     bool // Skill is configured in ecosystem grove.toml
+	ConfiguredGlobal        bool // Skill is configured in global config
+	ConfiguredUserProject   bool // Skill is in user's global config scoped to this project
+	ConfiguredUserEcosystem bool // Skill is in user's global config scoped to this ecosystem
 }
 
 // Model represents the skills browser TUI state.
@@ -145,6 +147,8 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 	globalSet := make(map[string]bool)
 	ecoSet := make(map[string]bool)
 	projSet := make(map[string]bool)
+	userProjSet := make(map[string]bool) // User-scoped project skills from global config
+	userEcoSet := make(map[string]bool)  // User-scoped ecosystem skills from global config
 
 	// Load global config directly from file (not cached svc.Config)
 	// to ensure we see updates made by toggle operations
@@ -158,6 +162,43 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 			}
 			for d := range globalCfg.Dependencies {
 				globalSet[d] = true
+			}
+
+			// User-scoped ecosystem settings from [skills.ecosystems.<name>]
+			if node != nil && globalCfg.Ecosystems != nil {
+				var ecoName string
+				if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
+					ecoName = filepath.Base(node.RootEcosystemPath)
+				} else if node.IsEcosystem() {
+					ecoName = node.Name
+				}
+				if ecoName != "" {
+					if ecoCfg, ok := globalCfg.Ecosystems[ecoName]; ok && ecoCfg != nil {
+						for _, u := range ecoCfg.Use {
+							userEcoSet[u] = true
+						}
+						for d := range ecoCfg.Dependencies {
+							userEcoSet[d] = true
+						}
+					}
+				}
+			}
+
+			// User-scoped project settings from [skills.projects.<name>]
+			// Use repository name, not worktree name
+			if node != nil && globalCfg.Projects != nil {
+				projectName := node.Name
+				if node.ParentProjectPath != "" {
+					projectName = filepath.Base(node.ParentProjectPath)
+				}
+				if projCfg, ok := globalCfg.Projects[projectName]; ok && projCfg != nil {
+					for _, u := range projCfg.Use {
+						userProjSet[u] = true
+					}
+					for d := range projCfg.Dependencies {
+						userProjSet[d] = true
+					}
+				}
 			}
 		}
 	}
@@ -319,18 +360,20 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 				prefix = "└─ "
 			}
 			nodes = append(nodes, DisplayNode{
-				Name:                s.name,
-				IsGroup:             false,
-				Prefix:              prefix,
-				Group:               s.group,
-				Domain:              s.domain,
-				Source:              s.source,
-				Description:         s.desc,
-				Path:                s.path,
-				Workspace:           s.workspace,
-				ConfiguredGlobal:    globalSet[s.name],
-				ConfiguredEcosystem: ecoSet[s.name],
-				ConfiguredProject:   projSet[s.name],
+				Name:                    s.name,
+				IsGroup:                 false,
+				Prefix:                  prefix,
+				Group:                   s.group,
+				Domain:                  s.domain,
+				Source:                  s.source,
+				Description:             s.desc,
+				Path:                    s.path,
+				Workspace:               s.workspace,
+				ConfiguredGlobal:        globalSet[s.name],
+				ConfiguredEcosystem:     ecoSet[s.name],
+				ConfiguredProject:       projSet[s.name],
+				ConfiguredUserProject:   userProjSet[s.name],
+				ConfiguredUserEcosystem: userEcoSet[s.name],
 			})
 		}
 	}
@@ -351,11 +394,32 @@ func (m *Model) SelectedSkill() *DisplayNode {
 	return &node
 }
 
+// SelectedNode returns the currently selected node (skill or group).
+func (m *Model) SelectedNode() *DisplayNode {
+	filtered := m.filteredNodes()
+	if m.cursor < 0 || m.cursor >= len(filtered) {
+		return nil
+	}
+	node := filtered[m.cursor]
+	return &node
+}
+
+// GetGroupSkills returns all skills belonging to a group.
+func (m *Model) GetGroupSkills(groupName string) []DisplayNode {
+	var skills []DisplayNode
+	for _, n := range m.nodes {
+		if !n.IsGroup && n.Group == groupName {
+			skills = append(skills, n)
+		}
+	}
+	return skills
+}
+
 // filteredNodes returns nodes that match the current filter and visibility settings.
 func (m *Model) filteredNodes() []DisplayNode {
 	// Helper to check if a node is visible based on configuration state
 	isVisible := func(n DisplayNode) bool {
-		return m.showAllSkills || n.ConfiguredProject || n.ConfiguredEcosystem || n.ConfiguredGlobal
+		return m.showAllSkills || n.ConfiguredProject || n.ConfiguredEcosystem || n.ConfiguredGlobal || n.ConfiguredUserProject || n.ConfiguredUserEcosystem
 	}
 
 	// If showing all skills with no filter, return all nodes
@@ -456,9 +520,9 @@ func (m *Model) getLeftPaneWidth() int {
 			if n.Workspace != "" && n.Workspace != n.Group {
 				w += len(" ["+n.Workspace+"]") + 2
 			}
-			// Buffer for configuration tags [P] [E] [G]
-			if n.ConfiguredProject || n.ConfiguredEcosystem || n.ConfiguredGlobal {
-				w += 12 // Space for up to 3 tags
+			// Buffer for configuration icons
+			if n.ConfiguredProject || n.ConfiguredEcosystem || n.ConfiguredGlobal || n.ConfiguredUserProject || n.ConfiguredUserEcosystem {
+				w += 12 // Space for icons
 			}
 		}
 		if w > maxWidth {
