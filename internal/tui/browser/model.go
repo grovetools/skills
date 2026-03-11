@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/grovetools/core/config"
+	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/core/tui/components/help"
 	"github.com/grovetools/core/tui/keymap"
 	"github.com/grovetools/core/tui/theme"
@@ -20,24 +21,28 @@ import (
 // DisplayNode represents a single row in the tree display.
 // It can be either a group header or a skill leaf.
 type DisplayNode struct {
-	Name        string
-	IsGroup     bool
-	Prefix      string // Tree prefix (├─, └─, etc.)
-	Group       string // Group name this skill belongs to
-	Domain      string
-	Source      skills.SourceType
-	Description string
-	Path        string
-	Workspace   string // Workspace name for workspace-derived skills
+	Name                string
+	IsGroup             bool
+	Prefix              string // Tree prefix (├─, └─, etc.)
+	Group               string // Group name this skill belongs to
+	Domain              string
+	Source              skills.SourceType
+	Description         string
+	Path                string
+	Workspace           string // Workspace name for workspace-derived skills
+	ConfiguredProject   bool   // Skill is configured in project grove.toml
+	ConfiguredEcosystem bool   // Skill is configured in ecosystem grove.toml
+	ConfiguredGlobal    bool   // Skill is configured in global config
 }
 
 // Model represents the skills browser TUI state.
 type Model struct {
-	service *service.Service
-	config  *config.Config
-	keys    skillskeymap.BrowserKeyMap
-	help    *help.Model
-	theme   *theme.Theme
+	service     *service.Service
+	config      *config.Config
+	currentNode *workspace.WorkspaceNode
+	keys        skillskeymap.BrowserKeyMap
+	help        *help.Model
+	theme       *theme.Theme
 
 	// Display state
 	nodes       []DisplayNode
@@ -48,6 +53,9 @@ type Model struct {
 	loading     bool
 	statusMsg   string
 	errorMsg    string
+
+	// View mode
+	showAllSkills bool // false = show only configured skills, true = show all
 
 	// Search state
 	searching   bool
@@ -70,7 +78,7 @@ type Model struct {
 }
 
 // New creates a new skills browser model.
-func New(svc *service.Service, cfg *config.Config) Model {
+func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode) Model {
 	keys := skillskeymap.NewBrowserKeyMap(cfg)
 	th := theme.DefaultTheme
 
@@ -83,21 +91,23 @@ func New(svc *service.Service, cfg *config.Config) Model {
 	helpModel.Theme = th
 
 	return Model{
-		service:     svc,
-		config:      cfg,
-		keys:        keys,
-		help:        &helpModel,
-		theme:       th,
-		loading:     true,
-		filterInput: ti,
-		sequence:    keymap.NewSequenceState(),
+		service:       svc,
+		config:        cfg,
+		currentNode:   node,
+		keys:          keys,
+		help:          &helpModel,
+		theme:         th,
+		loading:       true,
+		showAllSkills: false, // Default to contextual view (only configured skills)
+		filterInput:   ti,
+		sequence:      keymap.NewSequenceState(),
 	}
 }
 
 // Init initializes the model and starts loading skills.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		loadSkillsCmd(m.service),
+		loadSkillsCmd(m.service, m.currentNode),
 	)
 }
 
@@ -108,9 +118,9 @@ type skillsLoadedMsg struct {
 }
 
 // loadSkillsCmd loads skills asynchronously.
-func loadSkillsCmd(svc *service.Service) tea.Cmd {
+func loadSkillsCmd(svc *service.Service, node *workspace.WorkspaceNode) tea.Cmd {
 	return func() tea.Msg {
-		nodes, err := buildDisplayNodes(svc)
+		nodes, err := buildDisplayNodes(svc, node)
 		return skillsLoadedMsg{nodes: nodes, err: err}
 	}
 }
@@ -127,9 +137,58 @@ type skillEntry struct {
 }
 
 // buildDisplayNodes creates the tree structure for display.
-func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
+func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]DisplayNode, error) {
 	// Collect all skills from various sources
 	var allSkills []skillEntry
+
+	// Determine configured sets at each level
+	globalSet := make(map[string]bool)
+	ecoSet := make(map[string]bool)
+	projSet := make(map[string]bool)
+
+	// Load global config directly from file (not cached svc.Config)
+	// to ensure we see updates made by toggle operations
+	globalConfigPath := skills.GetGlobalConfigPath()
+	if globalConfigPath != "" {
+		globalDir := filepath.Dir(globalConfigPath)
+		globalCfg, _ := skills.LoadSkillsFromPath(globalDir)
+		if globalCfg != nil {
+			for _, u := range globalCfg.Use {
+				globalSet[u] = true
+			}
+			for d := range globalCfg.Dependencies {
+				globalSet[d] = true
+			}
+		}
+	}
+
+	// Load project and ecosystem configs if we have a workspace node
+	if node != nil {
+		projCfg, _ := skills.LoadSkillsFromPath(node.Path)
+		if projCfg != nil {
+			for _, u := range projCfg.Use {
+				projSet[u] = true
+			}
+			for d := range projCfg.Dependencies {
+				projSet[d] = true
+			}
+		}
+
+		if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
+			ecoCfg, _ := skills.LoadSkillsFromPath(node.RootEcosystemPath)
+			if ecoCfg != nil {
+				for _, u := range ecoCfg.Use {
+					ecoSet[u] = true
+				}
+				for d := range ecoCfg.Dependencies {
+					ecoSet[d] = true
+				}
+			}
+		} else if node.IsEcosystem() {
+			// Project is the ecosystem, so ecosystem set equals project set
+			ecoSet = projSet
+		}
+	}
 
 	// 1. Get builtin and user skills (non-workspace sources)
 	sources := skills.ListSkillSources(svc, nil)
@@ -260,15 +319,18 @@ func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
 				prefix = "└─ "
 			}
 			nodes = append(nodes, DisplayNode{
-				Name:        s.name,
-				IsGroup:     false,
-				Prefix:      prefix,
-				Group:       s.group,
-				Domain:      s.domain,
-				Source:      s.source,
-				Description: s.desc,
-				Path:        s.path,
-				Workspace:   s.workspace,
+				Name:                s.name,
+				IsGroup:             false,
+				Prefix:              prefix,
+				Group:               s.group,
+				Domain:              s.domain,
+				Source:              s.source,
+				Description:         s.desc,
+				Path:                s.path,
+				Workspace:           s.workspace,
+				ConfiguredGlobal:    globalSet[s.name],
+				ConfiguredEcosystem: ecoSet[s.name],
+				ConfiguredProject:   projSet[s.name],
 			})
 		}
 	}
@@ -278,19 +340,26 @@ func buildDisplayNodes(svc *service.Service) ([]DisplayNode, error) {
 
 // SelectedSkill returns the currently selected skill node, or nil if a group is selected.
 func (m *Model) SelectedSkill() *DisplayNode {
-	if m.cursor < 0 || m.cursor >= len(m.nodes) {
+	filtered := m.filteredNodes()
+	if m.cursor < 0 || m.cursor >= len(filtered) {
 		return nil
 	}
-	node := &m.nodes[m.cursor]
+	node := filtered[m.cursor]
 	if node.IsGroup {
 		return nil
 	}
-	return node
+	return &node
 }
 
-// filteredNodes returns nodes that match the current filter.
+// filteredNodes returns nodes that match the current filter and visibility settings.
 func (m *Model) filteredNodes() []DisplayNode {
-	if m.filterText == "" {
+	// Helper to check if a node is visible based on configuration state
+	isVisible := func(n DisplayNode) bool {
+		return m.showAllSkills || n.ConfiguredProject || n.ConfiguredEcosystem || n.ConfiguredGlobal
+	}
+
+	// If showing all skills with no filter, return all nodes
+	if m.filterText == "" && m.showAllSkills {
 		return m.nodes
 	}
 
@@ -302,7 +371,7 @@ func (m *Model) filteredNodes() []DisplayNode {
 			hasMatch := false
 			for _, n := range m.nodes {
 				if !n.IsGroup && n.Group == node.Name {
-					if matchesFilter(n, m.filterText) {
+					if matchesFilter(n, m.filterText) && isVisible(n) {
 						hasMatch = true
 						break
 					}
@@ -311,7 +380,7 @@ func (m *Model) filteredNodes() []DisplayNode {
 			if hasMatch {
 				filtered = append(filtered, node)
 			}
-		} else if matchesFilter(node, m.filterText) {
+		} else if matchesFilter(node, m.filterText) && isVisible(node) {
 			filtered = append(filtered, node)
 		}
 	}
@@ -386,6 +455,10 @@ func (m *Model) getLeftPaneWidth() int {
 			// Only show workspace tag if different from group
 			if n.Workspace != "" && n.Workspace != n.Group {
 				w += len(" ["+n.Workspace+"]") + 2
+			}
+			// Buffer for configuration tags [P] [E] [G]
+			if n.ConfiguredProject || n.ConfiguredEcosystem || n.ConfiguredGlobal {
+				w += 12 // Space for up to 3 tags
 			}
 		}
 		if w > maxWidth {

@@ -164,7 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.message
 		}
 		// Reload skills after sync
-		return m, loadSkillsCmd(m.service)
+		return m, loadSkillsCmd(m.service, m.currentNode)
 
 	case removeCompleteMsg:
 		if msg.err != nil {
@@ -173,14 +173,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.message
 		}
 		// Reload skills after remove
-		return m, loadSkillsCmd(m.service)
+		return m, loadSkillsCmd(m.service, m.currentNode)
 
 	case editCompleteMsg:
 		if msg.err != nil {
 			m.errorMsg = "Edit failed: " + msg.err.Error()
 		}
 		// Reload skills after edit to refresh any changes
-		return m, loadSkillsCmd(m.service)
+		return m, loadSkillsCmd(m.service, m.currentNode)
+
+	case toggleCompleteMsg:
+		if msg.err != nil {
+			m.errorMsg = "Toggle failed: " + msg.err.Error()
+		} else {
+			m.statusMsg = msg.message
+		}
+		// Reload skills after toggle to refresh the view
+		return m, loadSkillsCmd(m.service, m.currentNode)
 	}
 
 	// Update viewport
@@ -293,6 +302,58 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, editSkillCmd(skill)
 		} else if skill != nil {
 			m.statusMsg = "Cannot edit builtin skills"
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.ToggleAll):
+		m.showAllSkills = !m.showAllSkills
+		m.cursor = 0
+		m.updateViewportContent()
+		return m, nil
+
+	case key.Matches(msg, m.keys.ToggleProject):
+		skill := m.SelectedSkill()
+		if skill != nil && m.currentNode != nil {
+			tomlPath := filepath.Join(m.currentNode.Path, "grove.toml")
+			return m, toggleSkillCmd(tomlPath, skill.Name, "Project")
+		} else if skill == nil {
+			m.statusMsg = "Select a skill first"
+		} else {
+			m.statusMsg = "Not in a project context"
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.ToggleEcosystem):
+		skill := m.SelectedSkill()
+		if skill != nil && m.currentNode != nil {
+			ecoPath := m.currentNode.RootEcosystemPath
+			if ecoPath == "" && m.currentNode.IsEcosystem() {
+				ecoPath = m.currentNode.Path
+			}
+			if ecoPath != "" {
+				tomlPath := filepath.Join(ecoPath, "grove.toml")
+				return m, toggleSkillCmd(tomlPath, skill.Name, "Ecosystem")
+			} else {
+				m.statusMsg = "Not in an ecosystem context"
+			}
+		} else if skill == nil {
+			m.statusMsg = "Select a skill first"
+		} else {
+			m.statusMsg = "Not in a project context"
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.ToggleGlobal):
+		skill := m.SelectedSkill()
+		if skill != nil {
+			globalPath := skills.GetGlobalConfigPath()
+			if globalPath != "" {
+				return m, toggleSkillCmd(globalPath, skill.Name, "Global")
+			} else {
+				m.statusMsg = "Could not determine global config path"
+			}
+		} else {
+			m.statusMsg = "Select a skill first"
 		}
 		return m, nil
 	}
@@ -430,6 +491,22 @@ func editSkillCmd(skill *DisplayNode) tea.Cmd {
 // editCompleteMsg indicates edit operation completed.
 type editCompleteMsg struct {
 	err error
+}
+
+// toggleCompleteMsg indicates toggle operation completed.
+type toggleCompleteMsg struct {
+	message string
+	err     error
+}
+
+// toggleSkillCmd toggles a skill in the specified config file.
+func toggleSkillCmd(tomlPath, skillName, scope string) tea.Cmd {
+	return func() tea.Msg {
+		if err := skills.ToggleSkillInConfig(tomlPath, skillName); err != nil {
+			return toggleCompleteMsg{err: err}
+		}
+		return toggleCompleteMsg{message: "Toggled " + skillName + " in " + scope}
+	}
 }
 
 // newViewport creates a new viewport for the right pane.

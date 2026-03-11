@@ -12,9 +12,13 @@ type BrowserKeyMap struct {
 	keymap.Base
 
 	// TUI-specific bindings
-	Install key.Binding
-	Remove  key.Binding
-	Sync    key.Binding
+	Install         key.Binding
+	Remove          key.Binding
+	Sync            key.Binding
+	ToggleAll       key.Binding
+	ToggleProject   key.Binding
+	ToggleEcosystem key.Binding
+	ToggleGlobal    key.Binding
 }
 
 // NewBrowserKeyMap creates a new BrowserKeyMap with the given configuration.
@@ -34,6 +38,22 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 			key.WithKeys("s"),
 			key.WithHelp("s", "sync"),
 		),
+		ToggleAll: key.NewBinding(
+			key.WithKeys("A"),
+			key.WithHelp("A", "toggle all/active"),
+		),
+		ToggleProject: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "toggle in project"),
+		),
+		ToggleEcosystem: key.NewBinding(
+			key.WithKeys("E"),
+			key.WithHelp("E", "toggle in ecosystem"),
+		),
+		ToggleGlobal: key.NewBinding(
+			key.WithKeys("ctrl+g"),
+			key.WithHelp("ctrl+g", "toggle in global"),
+		),
 	}
 
 	// Apply TUI-specific overrides from config
@@ -52,7 +72,7 @@ func (k BrowserKeyMap) ShortHelp() []key.Binding {
 func (k BrowserKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
-		{k.Edit, k.Install, k.Remove, k.Sync, k.CopyPath},
+		{k.Edit, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.Sync},
 		{k.Search, k.ClearSearch},
 		{k.SwitchView, k.Help, k.Quit},
 	}
@@ -67,6 +87,10 @@ func (k BrowserKeyMap) Sections() []keymap.Section {
 			k.Install,
 			k.Remove,
 			k.Sync,
+			k.ToggleAll,
+			k.ToggleProject,
+			k.ToggleEcosystem,
+			k.ToggleGlobal,
 			k.CopyPath,
 		),
 		k.Base.SearchSection(),

@@ -22,6 +22,7 @@ func main() {
 		SkillsIntegrateScenario(),
 		// TUI Scenarios
 		TUIScenario(),
+		TUIWorkspaceScenario(),
 	}
 
 	// Execute the custom tend application with our scenarios

@@ -78,11 +78,17 @@ func (m Model) renderMainView() string {
 
 // renderHeader renders the title bar.
 func (m Model) renderHeader(width int) string {
+	// Mode indicator
+	modeIndicator := m.theme.Muted.Render(" [Active Context]")
+	if m.showAllSkills {
+		modeIndicator = m.theme.Highlight.Render(" [All Skills]")
+	}
+
 	// Use Bold style for title with cyan color for consistency
 	title := lipgloss.NewStyle().
 		Foreground(m.theme.Colors.Cyan).
 		Bold(true).
-		Render("Skills Browser")
+		Render("Skills Browser") + modeIndicator
 
 	// Right-aligned search indicator
 	var searchInfo string
@@ -173,6 +179,21 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 			skillName = skillName + " " + m.theme.Muted.Render("["+node.Workspace+"]")
 		}
 
+		// Build configuration tags
+		var tags string
+		if node.ConfiguredProject {
+			tags += lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("[P]")
+		}
+		if node.ConfiguredEcosystem {
+			tags += lipgloss.NewStyle().Foreground(m.theme.Colors.Blue).Render("[E]")
+		}
+		if node.ConfiguredGlobal {
+			tags += lipgloss.NewStyle().Foreground(m.theme.Colors.Violet).Render("[G]")
+		}
+		if tags != "" {
+			tags = " " + tags
+		}
+
 		if selected {
 			// Use highlight style (orange, no background) with arrow icon
 			if m.previewFocused {
@@ -182,16 +203,18 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 				if node.Workspace != "" && node.Workspace != node.Group {
 					line = line + " " + m.theme.Muted.Faint(true).Render("["+node.Workspace+"]")
 				}
+				line = line + tags
 			} else {
 				indicator = m.theme.Highlight.Render(theme.IconArrowRightBold + " ")
 				line = prefix + m.theme.Highlight.Render(node.Name)
 				if node.Workspace != "" && node.Workspace != node.Group {
 					line = line + " " + m.theme.Muted.Render("["+node.Workspace+"]")
 				}
+				line = line + tags
 			}
 		} else {
 			indicator = "  "
-			line = prefix + skillName
+			line = prefix + skillName + tags
 		}
 	}
 

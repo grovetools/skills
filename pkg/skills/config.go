@@ -53,7 +53,7 @@ func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*S
 	}
 
 	// Load project-level config
-	projectConfig, err := loadSkillsFromPath(node.Path)
+	projectConfig, err := LoadSkillsFromPath(node.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*S
 	// Load ecosystem-level config if we're in an ecosystem
 	var ecosystemConfig *SkillsConfig
 	if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
-		ecosystemConfig, err = loadSkillsFromPath(node.RootEcosystemPath)
+		ecosystemConfig, err = LoadSkillsFromPath(node.RootEcosystemPath)
 		if err != nil {
 			return nil, err
 		}
@@ -132,8 +132,8 @@ func applySkillsDefaults(cfg *SkillsConfig) *SkillsConfig {
 	return cfg
 }
 
-// loadSkillsFromPath reads the [skills] block from grove.toml at the given path.
-func loadSkillsFromPath(dir string) (*SkillsConfig, error) {
+// LoadSkillsFromPath reads the [skills] block from grove.toml at the given path.
+func LoadSkillsFromPath(dir string) (*SkillsConfig, error) {
 	tomlPath := filepath.Join(dir, "grove.toml")
 	data, err := os.ReadFile(tomlPath)
 	if err != nil {

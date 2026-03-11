@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/skills/internal/tui/browser"
 	"github.com/spf13/cobra"
 )
@@ -36,10 +38,17 @@ Actions:
 				return fmt.Errorf("service not initialized")
 			}
 
-			model := browser.New(svc, svc.Config)
+			// Try to determine current workspace context
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("could not get current directory: %w", err)
+			}
+			node, _ := workspace.GetProjectByPath(cwd) // Ignore error, node will be nil if not in workspace
+
+			model := browser.New(svc, svc.Config, node)
 			p := tea.NewProgram(model, tea.WithAltScreen())
 
-			_, err := p.Run()
+			_, err = p.Run()
 			return err
 		},
 	}
