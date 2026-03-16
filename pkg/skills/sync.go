@@ -7,6 +7,7 @@ import (
 
 	"github.com/grovetools/core/config"
 	"github.com/grovetools/core/fs"
+	"github.com/grovetools/core/git"
 	"github.com/grovetools/core/logging"
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/skills/pkg/service"
@@ -262,6 +263,123 @@ func NewServiceForNode(node *workspace.WorkspaceNode) (*service.Service, error) 
 		NotebookLocator: locator,
 		Config:          cfg,
 	}, nil
+}
+
+// SyncOptions configures the behavior of a workspace skill synchronization.
+type SyncOptions struct {
+	Prune  bool
+	DryRun bool
+}
+
+// SyncResult holds the results of a SyncWorkspace operation.
+type SyncResult struct {
+	Workspace    string
+	SyncedSkills []string
+	DestPaths    []string
+	Error        string
+}
+
+// SyncWorkspace resolves and installs skills for a single workspace node.
+// Returns the sync result containing synced skill names, destination paths, and any error.
+func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts SyncOptions, logger *logging.PrettyLogger) (*SyncResult, error) {
+	result := &SyncResult{
+		Workspace: "global",
+	}
+	if node != nil {
+		result.Workspace = node.Name
+	}
+
+	if node == nil {
+		return result, fmt.Errorf("workspace node is required")
+	}
+
+	gitRoot, err := git.GetGitRoot(node.Path)
+	if err != nil {
+		return result, fmt.Errorf("failed to determine git root: %w", err)
+	}
+
+	skillsCfg, err := LoadSkillsConfig(svc.Config, node)
+	if err != nil {
+		return result, fmt.Errorf("failed to load skills config: %w", err)
+	}
+
+	providers := []string{"claude"}
+	if skillsCfg != nil && len(skillsCfg.Providers) > 0 {
+		providers = skillsCfg.Providers
+	}
+
+	// If no skills configured, clean up all skills from destination
+	if skillsCfg == nil || (len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0) {
+		if opts.Prune && !opts.DryRun {
+			for _, provider := range providers {
+				destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
+				cleanupRemovedSkills(destBaseDir, nil) // nil means remove all
+			}
+		}
+		return result, nil
+	}
+
+	resolved, err := ResolveConfiguredSkills(svc, node, skillsCfg)
+	if err != nil {
+		return result, fmt.Errorf("failed to resolve skills: %w", err)
+	}
+
+	// Even if no skills resolved, we may need to clean up
+	if len(resolved) == 0 {
+		if opts.Prune && !opts.DryRun {
+			for _, provider := range providers {
+				destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
+				cleanupRemovedSkills(destBaseDir, nil)
+			}
+		}
+		return result, nil
+	}
+
+	// Collect expected output paths
+	var synced []string
+	destPathsMap := make(map[string]bool)
+	for name, r := range resolved {
+		synced = append(synced, name)
+		for _, p := range r.Providers {
+			destPathsMap[GetSkillsDirectoryForWorktree(gitRoot, p)] = true
+		}
+	}
+
+	var destPaths []string
+	for p := range destPathsMap {
+		destPaths = append(destPaths, p)
+	}
+
+	result.SyncedSkills = synced
+	result.DestPaths = destPaths
+
+	if opts.DryRun {
+		return result, nil
+	}
+
+	_, err = SyncConfiguredSkills(gitRoot, resolved, opts.Prune, logger)
+	return result, err
+}
+
+// cleanupRemovedSkills removes skill directories that are no longer in the configured set.
+// If configuredSkills is nil, removes ALL skill directories.
+func cleanupRemovedSkills(skillsDir string, configuredSkills map[string]bool) {
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillName := entry.Name()
+		// If configuredSkills is nil, remove all; otherwise check if configured
+		if configuredSkills == nil || !configuredSkills[skillName] {
+			// This skill is no longer configured, remove it
+			os.RemoveAll(filepath.Join(skillsDir, skillName))
+		}
+	}
 }
 
 // SyncConfiguredSkills syncs resolved skills to their target provider directories.

@@ -316,7 +316,7 @@ func listWorkspaceSkills(svc *service.Service, node *workspace.WorkspaceNode, al
 }
 
 func newSkillsSyncCmd() *cobra.Command {
-	var prune, dryRun bool
+	var prune, dryRun, allWorkspaces, ecosystem bool
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync skills declared in grove.toml to provider directories",
@@ -332,7 +332,9 @@ Example grove.toml configuration:
   providers = ["claude", "codex"]  # default: ["claude"]
 
 Use --dry-run to preview what would be synced without making changes.
-Use --prune to remove skills that are no longer declared in the configuration.`,
+Use --prune to remove skills that are no longer declared in the configuration.
+Use --ecosystem to sync skills for all workspaces in the current ecosystem.
+Use --all-workspaces to sync skills for all registered workspaces.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := logging.NewPrettyLogger()
 			svc := GetService()
@@ -343,70 +345,144 @@ Use --prune to remove skills that are no longer declared in the configuration.`,
 			}
 
 			node, err := workspace.GetProjectByPath(cwd)
-			if err != nil {
+			if err != nil && !allWorkspaces {
 				return fmt.Errorf("sync requires a workspace context: %w", err)
 			}
 
 			// Create service if needed
-			if svc == nil {
+			if svc == nil && node != nil {
 				svc, err = skills.NewServiceForNode(node)
 				if err != nil {
 					return fmt.Errorf("could not create service: %w", err)
 				}
 			}
 
-			// Load skills configuration from grove.toml
-			skillsCfg, err := skills.LoadSkillsConfig(svc.Config, node)
-			if err != nil {
-				return fmt.Errorf("invalid skills config: %w", err)
+			// Handle multi-workspace sync modes
+			if allWorkspaces || ecosystem {
+				return syncMultipleWorkspaces(svc, node, allWorkspaces, ecosystem, prune, dryRun, logger)
 			}
 
-			if skillsCfg == nil || (len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0) {
-				logger.InfoPretty("No skills declared in grove.toml. Nothing to sync.")
-				return nil
-			}
-
-			// Resolve all declared skills
-			resolved, err := skills.ResolveConfiguredSkills(svc, node, skillsCfg)
-			if err != nil {
-				return fmt.Errorf("resolution failed: %w", err)
-			}
-
-			if len(resolved) == 0 {
-				logger.InfoPretty("No skills to sync.")
-				return nil
-			}
-
-			// Find the git root - this is where skills should be installed
-			gitRoot, err := git.GetGitRoot(cwd)
-			if err != nil {
-				return fmt.Errorf("could not find git root: %w", err)
-			}
-
-			// Dry run mode
-			if dryRun {
-				logger.InfoPretty("DRY RUN: The following skills would be synced:")
-				for name, r := range resolved {
-					logger.InfoPretty(fmt.Sprintf("  - %s (%s) -> %v", name, r.SourceType, r.Providers))
-				}
-				return nil
-			}
-
-			// Perform the sync
-			logger.InfoPretty(fmt.Sprintf("Syncing %d skills to %s...", len(resolved), gitRoot))
-
-			syncedCount, err := skills.SyncConfiguredSkills(gitRoot, resolved, prune, logger)
-			if err != nil {
-				logger.WarnPretty(fmt.Sprintf("Sync completed with errors: %v", err))
-			}
-
-			logger.Success(fmt.Sprintf("Successfully synced %d skills.", syncedCount))
-			return nil
+			// Single workspace sync
+			return syncSingleWorkspace(svc, node, prune, dryRun, logger)
 		},
 	}
 	cmd.Flags().BoolVar(&prune, "prune", false, "Remove skills from destination that are not in config.")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be synced without making changes.")
+	cmd.Flags().BoolVar(&ecosystem, "ecosystem", false, "Sync skills for all workspaces in the ecosystem.")
+	cmd.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "Sync skills for all registered workspaces.")
 	return cmd
+}
+
+// syncSingleWorkspace syncs skills for a single workspace.
+func syncSingleWorkspace(svc *service.Service, node *workspace.WorkspaceNode, prune, dryRun bool, logger *logging.PrettyLogger) error {
+	opts := skills.SyncOptions{Prune: prune, DryRun: dryRun}
+	result, err := skills.SyncWorkspace(svc, node, opts, logger)
+	if err != nil {
+		return fmt.Errorf("sync failed: %w", err)
+	}
+
+	if dryRun {
+		if len(result.SyncedSkills) > 0 {
+			logger.InfoPretty(fmt.Sprintf("DRY RUN: Would sync %d skills to %s", len(result.SyncedSkills), node.Name))
+			for _, name := range result.SyncedSkills {
+				logger.InfoPretty(fmt.Sprintf("  - %s", name))
+			}
+		} else {
+			logger.InfoPretty(fmt.Sprintf("DRY RUN: No skills to sync for %s", node.Name))
+		}
+		return nil
+	}
+
+	if len(result.SyncedSkills) > 0 {
+		logger.Success(fmt.Sprintf("Synced %d skills for %s", len(result.SyncedSkills), node.Name))
+	} else {
+		logger.InfoPretty(fmt.Sprintf("No skills to sync for %s", node.Name))
+	}
+	return nil
+}
+
+// syncMultipleWorkspaces syncs skills for all workspaces or ecosystem workspaces.
+func syncMultipleWorkspaces(svc *service.Service, currentNode *workspace.WorkspaceNode, allWorkspaces, ecosystem, prune, dryRun bool, logger *logging.PrettyLogger) error {
+	var nodes []*workspace.WorkspaceNode
+	var err error
+
+	if allWorkspaces {
+		// Get all registered workspaces
+		nodes, err = workspace.GetProjects(nil)
+		if err != nil {
+			return fmt.Errorf("failed to get workspaces: %w", err)
+		}
+	} else if ecosystem {
+		// Get workspaces in the current ecosystem
+		if currentNode == nil {
+			return fmt.Errorf("--ecosystem requires being in a workspace")
+		}
+		nodes, err = workspace.GetProjects(nil)
+		if err != nil {
+			return fmt.Errorf("failed to get workspaces: %w", err)
+		}
+		// Filter to ecosystem workspaces
+		ecoPath := currentNode.RootEcosystemPath
+		if ecoPath == "" {
+			// If current node is the ecosystem root, use its path
+			if currentNode.Kind == workspace.KindEcosystemRoot || currentNode.Kind == workspace.KindEcosystemWorktree {
+				ecoPath = currentNode.Path
+			} else {
+				return fmt.Errorf("current directory is not part of an ecosystem")
+			}
+		}
+		var filtered []*workspace.WorkspaceNode
+		for _, n := range nodes {
+			if n.RootEcosystemPath == ecoPath || n.Path == ecoPath {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
+
+	if len(nodes) == 0 {
+		logger.InfoPretty("No workspaces found to sync.")
+		return nil
+	}
+
+	logger.InfoPretty(fmt.Sprintf("Syncing skills for %d workspaces...", len(nodes)))
+
+	var totalSynced, successCount int
+	for _, node := range nodes {
+		// Create service for each node if needed
+		nodeSvc := svc
+		if nodeSvc == nil {
+			nodeSvc, err = skills.NewServiceForNode(node)
+			if err != nil {
+				logger.WarnPretty(fmt.Sprintf("Skipping %s: %v", node.Name, err))
+				continue
+			}
+		}
+
+		opts := skills.SyncOptions{Prune: prune, DryRun: dryRun}
+		result, err := skills.SyncWorkspace(nodeSvc, node, opts, nil)
+		if err != nil {
+			logger.WarnPretty(fmt.Sprintf("Failed to sync %s: %v", node.Name, err))
+			continue
+		}
+
+		if len(result.SyncedSkills) > 0 {
+			if dryRun {
+				logger.InfoPretty(fmt.Sprintf("  %s: would sync %d skills", node.Name, len(result.SyncedSkills)))
+			} else {
+				logger.InfoPretty(fmt.Sprintf("  %s: synced %d skills", node.Name, len(result.SyncedSkills)))
+			}
+			totalSynced += len(result.SyncedSkills)
+		}
+		successCount++
+	}
+
+	if dryRun {
+		logger.Success(fmt.Sprintf("DRY RUN: Would sync %d total skills across %d workspaces", totalSynced, successCount))
+	} else {
+		logger.Success(fmt.Sprintf("Synced %d total skills across %d workspaces", totalSynced, successCount))
+	}
+	return nil
 }
 
 func newSkillsTreeCmd() *cobra.Command {
