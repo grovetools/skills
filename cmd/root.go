@@ -61,6 +61,7 @@ func Initialize() (*cobra.Command, error) {
 	rootCmd.AddCommand(newSkillsRemoveCmd())
 	rootCmd.AddCommand(newSkillsTreeCmd())
 	rootCmd.AddCommand(newSkillsSearchCmd())
+	rootCmd.AddCommand(newSkillsShowCmd())
 	rootCmd.AddCommand(newSkillsIntegrateCmd())
 	rootCmd.AddCommand(newSkillsValidateCmd())
 	rootCmd.AddCommand(newTuiCmd())

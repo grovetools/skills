@@ -32,6 +32,7 @@ func newSkillsCmd() *cobra.Command {
 	cmd.AddCommand(newSkillsSyncCmd())
 	cmd.AddCommand(newSkillsRemoveCmd())
 	cmd.AddCommand(newSkillsTreeCmd())
+	cmd.AddCommand(newSkillsShowCmd())
 	cmd.AddCommand(newSkillsValidateCmd())
 
 	return cmd

@@ -19,6 +19,7 @@ func main() {
 		TreeScenario(),
 		// Agentic workflows
 		SkillsSearchScenario(),
+		SkillsShowScenario(),
 		SkillsIntegrateScenario(),
 		// TUI Scenarios
 		TUIScenario(),
