@@ -10,6 +10,7 @@ import (
 	"github.com/grovetools/core/git"
 	"github.com/grovetools/core/logging"
 	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/core/util/pathutil"
 	"github.com/grovetools/skills/pkg/service"
 )
 
@@ -80,8 +81,9 @@ func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, 
 // Skills are listed in precedence order (later sources override earlier):
 //   1. Built-in skills (embedded in binary)
 //   2. User skills (~/.config/grove/skills)
-//   3. Ecosystem skills (from notebook)
-//   4. Project skills (from notebook)
+//   3. Notebook skills (from all configured notebook workspaces)
+//   4. Ecosystem skills (from notebook)
+//   5. Project skills (from notebook)
 func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[string]SkillSource {
 	sources := make(map[string]SkillSource)
 
@@ -94,7 +96,13 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 		addSkillSources(userSkillsPath, SourceTypeUser, sources)
 	}
 
-	// 3. Ecosystem skills
+	// 3. Notebook skills (scan all configured notebook workspaces)
+	// This allows globally-declared skills to be found regardless of which
+	// workspace is being resolved. Skills from the current workspace's own
+	// ecosystem/project override these in steps 4-5.
+	addNotebookSkillSources(svc, sources)
+
+	// 4. Ecosystem skills
 	if node != nil && node.RootEcosystemPath != "" {
 		ecoSkillsDir := getEcosystemSkillsDir(svc, node)
 		if ecoSkillsDir != "" {
@@ -102,7 +110,7 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 		}
 	}
 
-	// 4. Project skills (highest precedence)
+	// 5. Project skills (highest precedence)
 	if node != nil {
 		projectSkillsDir := getProjectSkillsDir(svc, node)
 		if projectSkillsDir != "" {
@@ -111,6 +119,40 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 	}
 
 	return sources
+}
+
+// addNotebookSkillSources scans all configured notebook definitions for skill directories.
+// This enables skills declared in global config to be resolved from any notebook,
+// not just the current workspace's own notebook.
+func addNotebookSkillSources(svc *service.Service, sources map[string]SkillSource) {
+	if svc == nil || svc.Config == nil || svc.Config.Notebooks == nil {
+		return
+	}
+
+	for _, nb := range svc.Config.Notebooks.Definitions {
+		if nb == nil || nb.RootDir == "" {
+			continue
+		}
+
+		rootDir, err := pathutil.Expand(nb.RootDir)
+		if err != nil {
+			continue
+		}
+
+		workspacesDir := filepath.Join(rootDir, "workspaces")
+		wsEntries, err := os.ReadDir(workspacesDir)
+		if err != nil {
+			continue
+		}
+
+		for _, wsEntry := range wsEntries {
+			if !wsEntry.IsDir() {
+				continue
+			}
+			skillsDir := filepath.Join(workspacesDir, wsEntry.Name(), "skills")
+			addSkillSources(skillsDir, SourceTypeEcosystem, sources)
+		}
+	}
 }
 
 // addBuiltinSkillSources adds embedded/built-in skills to the sources map
