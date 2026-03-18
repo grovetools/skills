@@ -337,7 +337,8 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 
 	gitRoot, err := git.GetGitRoot(node.Path)
 	if err != nil {
-		return result, fmt.Errorf("failed to determine git root: %w", err)
+		// Fallback to the project's root path if it is not a git repository
+		gitRoot = node.Path
 	}
 
 	skillsCfg, err := LoadSkillsConfig(svc.Config, node)
