@@ -272,7 +272,7 @@ func readSkillFromFS(srcFS fs.FS, name string) (map[string][]byte, error) {
 		return nil
 	})
 	if err != nil || len(skillFiles) == 0 {
-		return nil, fmt.Errorf("embedded skill '%s' not found", name)
+		return nil, fmt.Errorf("skill '%s' not found", name)
 	}
 	return skillFiles, nil
 }

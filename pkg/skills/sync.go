@@ -494,29 +494,87 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 
 	// Prune skills not in config if requested
 	if prune {
-		for provider, validSkills := range installedPerProvider {
-			destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
-			entries, err := os.ReadDir(destBaseDir)
-			if err != nil {
-				continue
-			}
+		pruneSkillsDir(gitRoot, installedPerProvider, logger)
+	}
 
-			for _, entry := range entries {
-				if entry.IsDir() && !validSkills[entry.Name()] {
-					pathToRemove := filepath.Join(destBaseDir, entry.Name())
-					if err := os.RemoveAll(pathToRemove); err != nil {
-						if logger != nil {
-							logger.WarnPretty(fmt.Sprintf("Failed to prune skill '%s': %v", entry.Name(), err))
-						}
-					} else {
-						if logger != nil {
-							logger.InfoPretty(fmt.Sprintf("Pruned unconfigured skill: %s (provider: %s)", entry.Name(), provider))
-						}
+	// Also sync to any worktrees under .grove-worktrees/
+	syncSkillsToWorktrees(gitRoot, resolved, installedPerProvider, prune, logger)
+
+	return syncedCount, lastErr
+}
+
+// syncSkillsToWorktrees syncs resolved skills to all worktrees under .grove-worktrees/.
+func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger) {
+	worktreesDir := filepath.Join(gitRoot, ".grove-worktrees")
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		return // No worktrees directory, nothing to do
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		wtPath := filepath.Join(worktreesDir, entry.Name())
+
+		for skillName, r := range resolved {
+			for _, provider := range r.Providers {
+				destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
+				destPath := filepath.Join(destBaseDir, skillName)
+
+				if err := os.MkdirAll(destBaseDir, 0755); err != nil {
+					continue
+				}
+
+				os.RemoveAll(destPath)
+
+				if r.SourceType == SourceTypeBuiltin {
+					files, err := readSkillFromFS(embeddedSkillsFS, skillName)
+					if err != nil {
+						continue
+					}
+					if err := os.MkdirAll(destPath, 0755); err != nil {
+						continue
+					}
+					for relPath, content := range files {
+						filePath := filepath.Join(destPath, relPath)
+						os.MkdirAll(filepath.Dir(filePath), 0755)
+						os.WriteFile(filePath, content, 0644)
+					}
+				} else {
+					fs.CopyDir(r.PhysicalPath, destPath)
+				}
+			}
+		}
+
+		if prune {
+			pruneSkillsDir(wtPath, installedPerProvider, logger)
+		}
+	}
+}
+
+// pruneSkillsDir removes skills not in the installed map from a directory.
+func pruneSkillsDir(root string, installedPerProvider map[string]map[string]bool, logger *logging.PrettyLogger) {
+	for provider, validSkills := range installedPerProvider {
+		destBaseDir := GetSkillsDirectoryForWorktree(root, provider)
+		entries, err := os.ReadDir(destBaseDir)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() && !validSkills[entry.Name()] {
+				pathToRemove := filepath.Join(destBaseDir, entry.Name())
+				if err := os.RemoveAll(pathToRemove); err != nil {
+					if logger != nil {
+						logger.WarnPretty(fmt.Sprintf("Failed to prune skill '%s': %v", entry.Name(), err))
+					}
+				} else {
+					if logger != nil {
+						logger.InfoPretty(fmt.Sprintf("Pruned unconfigured skill: %s (provider: %s)", entry.Name(), provider))
 					}
 				}
 			}
 		}
 	}
-
-	return syncedCount, lastErr
 }
