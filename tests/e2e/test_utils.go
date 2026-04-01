@@ -48,3 +48,34 @@ func FindBinary() (string, error) {
 
 	return "", fmt.Errorf("could not find grove-skills binary - please set GROVE_SKILLS_BINARY environment variable or ensure grove-skills is built and in PATH")
 }
+
+// FindDaemonBinary locates the groved binary for tests.
+// It checks GROVED_BINARY env var, common relative paths, and system PATH.
+func FindDaemonBinary() (string, error) {
+	if binary := os.Getenv("GROVED_BINARY"); binary != "" {
+		return binary, nil
+	}
+
+	candidates := []string{
+		"./bin/groved",
+		"../bin/groved",
+		"../../bin/groved",
+		"../../../bin/groved",
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			absPath, err := filepath.Abs(candidate)
+			if err != nil {
+				return "", err
+			}
+			return absPath, nil
+		}
+	}
+
+	if path, err := exec.LookPath("groved"); err == nil {
+		return path, nil
+	}
+
+	return "", fmt.Errorf("could not find groved binary - please set GROVED_BINARY environment variable")
+}

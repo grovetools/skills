@@ -21,6 +21,8 @@ func main() {
 		SkillsSearchScenario(),
 		SkillsShowScenario(),
 		SkillsIntegrateScenario(),
+		// Daemon Scenarios
+		GrovedSkillSyncScenario(),
 		// TUI Scenarios
 		TUIScenario(),
 		TUIWorkspaceScenario(),
