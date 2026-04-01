@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/grovetools/core/config"
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/skills/pkg/service"
 	"gopkg.in/yaml.v3"
@@ -191,6 +192,62 @@ func ListSkillsWithService(svc *service.Service) ([]string, map[string]string, e
 	}
 	sort.Strings(skillNames)
 	return skillNames, skillMap, nil
+}
+
+// GetSkillByWorkDir resolves a skill using full workspace-aware resolution from the
+// given working directory. Unlike GetSkill/GetSkillWithService, this function does
+// not depend on os.Getwd() or a *service.Service, making it suitable for callers
+// that operate in a different directory than the process cwd (e.g., flow's daemon
+// resolving skills for jobs running in worktrees).
+//
+// Precedence: project notebook > ecosystem notebook > user > builtin
+func GetSkillByWorkDir(name string, workDir string) (map[string][]byte, error) {
+	node, err := workspace.GetProjectByPath(workDir)
+	if err == nil {
+		coreCfg, cfgErr := config.LoadDefault()
+		if cfgErr != nil {
+			coreCfg = &config.Config{}
+		}
+
+		locator := workspace.NewNotebookLocator(coreCfg)
+
+		// 1. Try project-level notebook skills
+		if skillFiles, err := readSkillFromNotebook(locator, node, name); err == nil {
+			return skillFiles, nil
+		}
+
+		// 2. Try ecosystem-level notebook skills
+		if node.RootEcosystemPath != "" {
+			ecoNode := &workspace.WorkspaceNode{
+				Name:         filepath.Base(node.RootEcosystemPath),
+				Path:         node.RootEcosystemPath,
+				NotebookName: node.NotebookName,
+			}
+			if skillFiles, err := readSkillFromNotebook(locator, ecoNode, name); err == nil {
+				return skillFiles, nil
+			}
+		}
+	}
+
+	// 3. User skills
+	userSkillsPath := getUserSkillsPathWithConfig(nil)
+	if userSkillsPath != "" {
+		if skillFiles, err := readSkillFromDisk(filepath.Join(userSkillsPath, name)); err == nil {
+			return skillFiles, nil
+		}
+	}
+
+	// 4. Builtin/embedded skills
+	return readSkillFromFS(embeddedSkillsFS, name)
+}
+
+// readSkillFromNotebook reads a skill from the notebook skills directory for a workspace node.
+func readSkillFromNotebook(locator *workspace.NotebookLocator, node *workspace.WorkspaceNode, name string) (map[string][]byte, error) {
+	skillsDir, err := locator.GetSkillsDir(node)
+	if err != nil || skillsDir == "" {
+		return nil, fmt.Errorf("no skills directory found")
+	}
+	return readSkillFromDisk(filepath.Join(skillsDir, name))
 }
 
 // GetSkill retrieves all files for a given skill, checking sources in order of precedence.
