@@ -43,7 +43,7 @@ func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefi
 	visited[name] = true
 	defer func() { visited[name] = false }()
 
-	skillFiles, err := GetSkillWithService(svc, name)
+	loadedSkill, err := LoadSkillBypassingAccessWithService(svc, nil, name)
 	if err != nil {
 		if isRoot {
 			sb.WriteString(fmt.Sprintf("%s (not found)\n", name))
@@ -57,7 +57,7 @@ func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefi
 		return nil
 	}
 
-	content, ok := skillFiles["SKILL.md"]
+	content, ok := loadedSkill.Files["SKILL.md"]
 	if !ok {
 		return fmt.Errorf("skill '%s' missing SKILL.md", name)
 	}

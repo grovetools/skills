@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/core/pkg/workspace" // used by GetProjectByPath
 	"github.com/grovetools/skills/pkg/skills"
 	"github.com/spf13/cobra"
 )
@@ -67,56 +67,13 @@ Output modes:
 				}
 			}
 
-			// Check if this is a workspace-qualified name
-			wsName, unqualifiedName := skills.ResolveQualifiedSkillName(skillName)
-
-			var source skills.SkillSource
-			var content []byte
-			var found bool
-
-			if wsName != "" {
-				// Look up across all workspaces
-				skill, err := skills.FindSkillAcrossWorkspaces(svc, skillName)
-				if err != nil {
-					return fmt.Errorf("failed to search workspaces: %w", err)
-				}
-				if skill == nil {
-					return fmt.Errorf("skill '%s' not found in workspace '%s'", unqualifiedName, wsName)
-				}
-				source = skills.SkillSource{
-					Path: skill.Path,
-					Type: skills.SourceTypeEcosystem,
-				}
-				found = true
-				// Read content from disk
-				content, err = os.ReadFile(filepath.Join(skill.Path, "SKILL.md"))
-				if err != nil {
-					return fmt.Errorf("failed to read skill content: %w", err)
-				}
-			} else {
-				// Look up in local sources
-				sources := skills.ListSkillSources(svc, node)
-				source, found = sources[skillName]
-				if !found {
-					return fmt.Errorf("skill '%s' not found", skillName)
-				}
-
-				// Read skill content
-				if source.Type == skills.SourceTypeBuiltin {
-					files, err := skills.GetSkill(skillName)
-					if err != nil {
-						return fmt.Errorf("failed to read builtin skill: %w", err)
-					}
-					content = files["SKILL.md"]
-				} else {
-					content, err = os.ReadFile(filepath.Join(source.Path, "SKILL.md"))
-					if err != nil {
-						return fmt.Errorf("failed to read skill content: %w", err)
-					}
-				}
+			loadedSkill, err := skills.LoadSkillBypassingAccessWithService(svc, node, skillName)
+			if err != nil {
+				return err
 			}
 
-			if content == nil {
+			content, ok := loadedSkill.Files["SKILL.md"]
+			if !ok || len(content) == 0 {
 				return fmt.Errorf("skill '%s' has no SKILL.md content", skillName)
 			}
 
@@ -127,8 +84,8 @@ Output modes:
 			}
 
 			// Determine file path for display
-			filePath := filepath.Join(source.Path, "SKILL.md")
-			if source.Type == skills.SourceTypeBuiltin {
+			filePath := filepath.Join(loadedSkill.PhysicalPath, "SKILL.md")
+			if loadedSkill.SourceType == skills.SourceTypeBuiltin {
 				filePath = "(builtin - read only)"
 			}
 
@@ -138,7 +95,7 @@ Output modes:
 					Description: meta.Description,
 					Domain:      meta.Domain,
 					Requires:    meta.Requires,
-					Source:      string(source.Type),
+					Source:      string(loadedSkill.SourceType),
 					FilePath:    filePath,
 					Content:     string(content),
 				}
@@ -161,7 +118,7 @@ Output modes:
 			if len(meta.Requires) > 0 {
 				fmt.Printf("Requires:    %s\n", strings.Join(meta.Requires, ", "))
 			}
-			fmt.Printf("Source:      %s\n", source.Type)
+			fmt.Printf("Source:      %s\n", loadedSkill.SourceType)
 			fmt.Printf("Path:        %s\n", filePath)
 			fmt.Println()
 			fmt.Println("=== Content ===")

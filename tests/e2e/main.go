@@ -21,6 +21,8 @@ func main() {
 		SkillsSearchScenario(),
 		SkillsShowScenario(),
 		SkillsIntegrateScenario(),
+		// Registry model
+		RegistryScenario(),
 		// Daemon Scenarios
 		GrovedSkillSyncScenario(),
 		// TUI Scenarios

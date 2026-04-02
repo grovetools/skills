@@ -163,17 +163,8 @@ func listSkillsGrouped(svc *service.Service, sources map[string]skills.SkillSour
 
 		// Read skill content to get domain
 		var content []byte
-		var err error
-		if src.Type == skills.SourceTypeBuiltin {
-			files, e := skills.GetSkill(name)
-			if e == nil {
-				content = files["SKILL.md"]
-			}
-		} else {
-			content, err = os.ReadFile(filepath.Join(src.Path, "SKILL.md"))
-			if err != nil {
-				content = nil
-			}
+		if loadedSkill, err := skills.LoadSkillFromSource(name, src); err == nil {
+			content = loadedSkill.Files["SKILL.md"]
 		}
 
 		if content != nil {

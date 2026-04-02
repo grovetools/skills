@@ -463,10 +463,9 @@ func (m *Model) updateViewportContent() {
 			content = data
 		}
 	} else {
-		// Builtin or user skill - use standard lookup
-		files, err := skills.GetSkillWithService(m.service, skill.Name)
-		if err == nil {
-			content = files["SKILL.md"]
+		// Builtin or user skill - use registry lookup
+		if loadedSkill, err := skills.LoadSkillBypassingAccessWithService(m.service, nil, skill.Name); err == nil {
+			content = loadedSkill.Files["SKILL.md"]
 		}
 	}
 	m.cachedContent = string(content)

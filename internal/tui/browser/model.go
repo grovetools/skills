@@ -244,16 +244,8 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 
 		// Get skill content for metadata
 		var content []byte
-		if src.Type == skills.SourceTypeBuiltin {
-			files, err := skills.GetSkill(name)
-			if err == nil {
-				content = files["SKILL.md"]
-			}
-		} else {
-			data, err := os.ReadFile(filepath.Join(src.Path, "SKILL.md"))
-			if err == nil {
-				content = data
-			}
+		if loadedSkill, err := skills.LoadSkillFromSource(name, src); err == nil {
+			content = loadedSkill.Files["SKILL.md"]
 		}
 
 		if content != nil {

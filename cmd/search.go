@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/core/pkg/workspace" // used by GetProjectByPath
 	"github.com/grovetools/skills/pkg/skills"
 	"github.com/spf13/cobra"
 )
@@ -72,27 +72,18 @@ Output modes:
 			var results []SearchResult
 
 			for name, src := range sources {
-				// Read skill content
-				var content []byte
-				if src.Type == skills.SourceTypeBuiltin {
-					// Extract from embedded FS using GetSkill
-					files, e := skills.GetSkill(name)
-					if e == nil {
-						content = files["SKILL.md"]
-					}
-				} else {
-					content, err = os.ReadFile(filepath.Join(src.Path, "SKILL.md"))
-					if err != nil {
-						continue
-					}
+				loadedSkill, loadErr := skills.LoadSkillFromSource(name, src)
+				if loadErr != nil {
+					continue
 				}
 
+				content := loadedSkill.Files["SKILL.md"]
 				if content == nil {
 					continue
 				}
 
-				meta, err := skills.ParseSkillFrontmatter(content)
-				if err != nil {
+				meta, parseErr := skills.ParseSkillFrontmatter(content)
+				if parseErr != nil {
 					continue
 				}
 
@@ -106,15 +97,15 @@ Output modes:
 				}
 
 				if matchReason != "" {
-					filePath := filepath.Join(src.Path, "SKILL.md")
-					if src.Type == skills.SourceTypeBuiltin {
+					filePath := filepath.Join(loadedSkill.PhysicalPath, "SKILL.md")
+					if loadedSkill.SourceType == skills.SourceTypeBuiltin {
 						filePath = "[READ-ONLY BUILTIN]"
 					}
 					results = append(results, SearchResult{
 						Name:        meta.Name,
 						Description: meta.Description,
 						Domain:      meta.Domain,
-						Source:      string(src.Type),
+						Source:      string(loadedSkill.SourceType),
 						FilePath:    filePath,
 						MatchReason: matchReason,
 					})

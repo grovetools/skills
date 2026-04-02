@@ -421,6 +421,6 @@ func treeCommandDetectsCircular(ctx *harness.Context) error {
 	return ctx.Verify(func(v *verify.Collector) {
 		v.Contains("shows circular-a", result.Stdout, "circular-a")
 		v.Contains("shows circular-b", result.Stdout, "circular-b")
-		v.Contains("detects circular dependency", result.Stdout, "circular dependency detected")
+		v.Contains("detects circular dependency", result.Stdout, "(circular)")
 	})
 }
