@@ -19,10 +19,12 @@ var embeddedSkillsFS embed.FS
 
 // SkillMetadata represents the YAML frontmatter of a SKILL.md file
 type SkillMetadata struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Requires    []string `yaml:"requires,omitempty"`
-	Domain      string   `yaml:"domain,omitempty"`
+	Name          string   `yaml:"name"`
+	Description   string   `yaml:"description"`
+	Requires      []string `yaml:"requires,omitempty"`
+	Domain        string   `yaml:"domain,omitempty"`
+	SkillSequence []string `yaml:"skill_sequence,omitempty"`
+	Produces      []string `yaml:"produces,omitempty"`
 }
 
 // ValidationError represents a skill validation error
