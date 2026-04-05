@@ -61,6 +61,12 @@ func LoadAuthorizedSkill(workDir, skillName string) (*LoadedSkill, error) {
 			}
 		}
 
+		// If not directly authorized, check if any authorized skill transitively
+		// includes this skill via its skill_sequence (implicit authorization).
+		if !authorized {
+			authorized = isTransitivelyAuthorized(svc, node, skillName, cfg)
+		}
+
 		if !authorized {
 			return nil, &ErrSkillNotAuthorized{SkillName: skillName, WorkDir: workDir}
 		}
@@ -109,6 +115,66 @@ func LoadSkillFromSource(skillName string, src SkillSource) (*LoadedSkill, error
 		PhysicalPath: src.Path,
 		Files:        files,
 	}, nil
+}
+
+// isTransitivelyAuthorized checks if a skill is implicitly authorized via the
+// skill_sequence of any directly authorized skill. This allows sub-skills
+// declared in a parent's SKILL.md frontmatter to be loaded without explicit
+// grove.toml authorization. The check is recursive: a sub-skill of a sub-skill
+// is also considered authorized.
+func isTransitivelyAuthorized(svc *service.Service, node *workspace.WorkspaceNode, targetSkill string, cfg *SkillsConfig) bool {
+	if cfg == nil {
+		return false
+	}
+
+	// Collect all directly authorized skill names
+	var authorizedNames []string
+	authorizedNames = append(authorizedNames, cfg.Use...)
+	for name := range cfg.Dependencies {
+		authorizedNames = append(authorizedNames, name)
+	}
+
+	visited := make(map[string]bool)
+	for _, name := range authorizedNames {
+		if checkSkillSequenceContains(svc, node, name, targetSkill, visited) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkSkillSequenceContains recursively checks if a skill's skill_sequence
+// (or any transitive sub-skill's sequence) contains the target skill name.
+func checkSkillSequenceContains(svc *service.Service, node *workspace.WorkspaceNode, skillName, targetSkill string, visited map[string]bool) bool {
+	if visited[skillName] {
+		return false
+	}
+	visited[skillName] = true
+
+	loaded, err := loadSkillInternal(svc, node, skillName)
+	if err != nil {
+		return false
+	}
+
+	content, ok := loaded.Files["SKILL.md"]
+	if !ok {
+		return false
+	}
+
+	meta, err := ParseSkillFrontmatter(content)
+	if err != nil {
+		return false
+	}
+
+	for _, seqSkill := range meta.SkillSequence {
+		if seqSkill == targetSkill {
+			return true
+		}
+		if checkSkillSequenceContains(svc, node, seqSkill, targetSkill, visited) {
+			return true
+		}
+	}
+	return false
 }
 
 // loadSkillInternal handles the actual resolution and file loading.

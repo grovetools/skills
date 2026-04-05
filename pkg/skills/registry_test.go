@@ -120,6 +120,23 @@ func TestLoadAuthorizedSkill_EmptyUseRejectsAll(t *testing.T) {
 	}
 }
 
+func TestLoadAuthorizedSkill_TransitiveAuthNotTriggeredForUnrelatedSkill(t *testing.T) {
+	// Authorize "explain-with-analogy" (a builtin with no skill_sequence).
+	// "simplify" should still be rejected — transitive check should not
+	// produce false positives.
+	projectDir := setupAuthTestWorkspace(t, []string{"explain-with-analogy"})
+
+	_, err := LoadAuthorizedSkill(projectDir, "simplify")
+	if err == nil {
+		t.Fatal("expected ErrSkillNotAuthorized — transitive check should not authorize unrelated skills")
+	}
+
+	var authErr *ErrSkillNotAuthorized
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected ErrSkillNotAuthorized, got: %T: %v", err, err)
+	}
+}
+
 func TestLoadSkillBypassingAccess_IgnoresAuthorization(t *testing.T) {
 	// No skills declared, but bypassing access should still work
 	projectDir := setupAuthTestWorkspace(t, []string{})
