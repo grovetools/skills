@@ -30,6 +30,8 @@ type DisplayNode struct {
 	Description         string
 	Path                string
 	Workspace           string // Workspace name for workspace-derived skills
+	Depth               int    // Nesting depth (0 for top-level skills, 1+ for sub-skills)
+	ParentSkill         string // Name of parent skill if this is a sub-skill
 	ConfiguredProject       bool // Skill is configured in project grove.toml
 	ConfiguredEcosystem     bool // Skill is configured in ecosystem grove.toml
 	ConfiguredGlobal        bool // Skill is configured in global config
@@ -74,6 +76,7 @@ type Model struct {
 	cachedSkillName string
 	cachedTree      string
 	cachedContent   string
+	cachedMetadata  *skills.SkillMetadata
 
 	// Sequence state for multi-key bindings (gg, etc.)
 	sequence *keymap.SequenceState
@@ -129,13 +132,15 @@ func loadSkillsCmd(svc *service.Service, node *workspace.WorkspaceNode) tea.Cmd 
 
 // skillEntry represents a skill for grouping and display.
 type skillEntry struct {
-	name      string
-	source    skills.SourceType
-	desc      string
-	path      string
-	workspace string
-	domain    string
-	group     string
+	name        string
+	source      skills.SourceType
+	desc        string
+	path        string
+	workspace   string
+	domain      string
+	group       string
+	relPath     string // Relative path from skills dir (e.g., "sear/heat-pan")
+	parentSkill string // Parent skill name if nested (e.g., "sear" for "sear/heat-pan")
 }
 
 // buildDisplayNodes creates the tree structure for display.
@@ -300,23 +305,30 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 			}
 		}
 
-		// Group workspace skills by their workspace name, with nested RelPath support
+		// Group workspace skills by workspace name; track parent for nested skills
 		group := "Workspace Skills"
-		relDir := filepath.Dir(ws.RelPath)
-		if relDir != "." && relDir != "" {
-			group = filepath.Join(ws.Workspace, relDir)
-		} else if ws.Workspace != "" {
+		if ws.Workspace != "" {
 			group = ws.Workspace
 		}
 
+		// Determine if this is a sub-skill (nested under a parent skill directory)
+		parentSkill := ""
+		relDir := filepath.Dir(ws.RelPath)
+		if relDir != "." && relDir != "" {
+			// This skill is nested (e.g., relPath = "sear/heat-pan", parent = "sear")
+			parentSkill = filepath.Base(relDir)
+		}
+
 		allSkills = append(allSkills, skillEntry{
-			name:      ws.Name,
-			source:    skills.SourceTypeProject, // Use Project for workspace skills
-			desc:      desc,
-			path:      ws.Path,
-			workspace: ws.Workspace,
-			domain:    domain,
-			group:     group,
+			name:        ws.Name,
+			source:      skills.SourceTypeProject,
+			desc:        desc,
+			path:        ws.Path,
+			workspace:   ws.Workspace,
+			domain:      domain,
+			group:       group,
+			relPath:     ws.RelPath,
+			parentSkill: parentSkill,
 		})
 	}
 
@@ -324,23 +336,28 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 		return nil, nil
 	}
 
-	// Group skills by their determined group
-	groupSkills := make(map[string][]skillEntry)
+	// Separate top-level skills from sub-skills
+	topLevel := make(map[string][]skillEntry)  // group -> top-level skills
+	subSkills := make(map[string][]skillEntry)  // parentSkillName -> sub-skills
 	for _, s := range allSkills {
-		groupSkills[s.group] = append(groupSkills[s.group], s)
+		if s.parentSkill != "" {
+			subSkills[s.parentSkill] = append(subSkills[s.parentSkill], s)
+		} else {
+			topLevel[s.group] = append(topLevel[s.group], s)
+		}
 	}
 
 	// Sort groups
 	var groups []string
-	for g := range groupSkills {
+	for g := range topLevel {
 		groups = append(groups, g)
 	}
 	sort.Strings(groups)
 
-	// Build flat node list with tree prefixes
+	// Build flat node list with tree prefixes, nesting sub-skills under parents
 	var nodes []DisplayNode
 	for _, groupName := range groups {
-		skillList := groupSkills[groupName]
+		skillList := topLevel[groupName]
 		sort.Slice(skillList, func(i, j int) bool {
 			return skillList[i].name < skillList[j].name
 		})
@@ -351,10 +368,13 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 			IsGroup: true,
 		})
 
-		// Add skills with tree prefixes
+		// Add skills with tree prefixes, including nested sub-skills
 		for i, s := range skillList {
+			children := subSkills[s.name]
+			isLastTopLevel := i == len(skillList)-1 && len(children) == 0
+
 			prefix := "├─ "
-			if i == len(skillList)-1 {
+			if isLastTopLevel || (i == len(skillList)-1 && len(children) > 0) {
 				prefix = "└─ "
 			}
 			nodes = append(nodes, DisplayNode{
@@ -367,12 +387,48 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 				Description:             s.desc,
 				Path:                    s.path,
 				Workspace:               s.workspace,
+				Depth:                   0,
 				ConfiguredGlobal:        globalSet[s.name],
 				ConfiguredEcosystem:     ecoSet[s.name],
 				ConfiguredProject:       projSet[s.name],
 				ConfiguredUserProject:   userProjSet[s.name],
 				ConfiguredUserEcosystem: userEcoSet[s.name],
 			})
+
+			// Add sub-skills nested under this parent
+			if len(children) > 0 {
+				sort.Slice(children, func(a, b int) bool {
+					return children[a].name < children[b].name
+				})
+				for j, child := range children {
+					childPrefix := "   ├─ "
+					if j == len(children)-1 {
+						childPrefix = "   └─ "
+					}
+					// Adjust prefix based on whether parent was last in group
+					if i < len(skillList)-1 {
+						childPrefix = "│  " + childPrefix[3:]
+					}
+					nodes = append(nodes, DisplayNode{
+						Name:                    child.name,
+						IsGroup:                 false,
+						Prefix:                  childPrefix,
+						Group:                   s.group, // Same group as parent
+						Domain:                  child.domain,
+						Source:                  child.source,
+						Description:             child.desc,
+						Path:                    child.path,
+						Workspace:               child.workspace,
+						Depth:                   1,
+						ParentSkill:             s.name,
+						ConfiguredGlobal:        globalSet[child.name] || globalSet[s.name],
+						ConfiguredEcosystem:     ecoSet[child.name] || ecoSet[s.name],
+						ConfiguredProject:       projSet[child.name] || projSet[s.name],
+						ConfiguredUserProject:   userProjSet[child.name] || userProjSet[s.name],
+						ConfiguredUserEcosystem: userEcoSet[child.name] || userEcoSet[s.name],
+					})
+				}
+			}
 		}
 	}
 

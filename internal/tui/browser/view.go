@@ -394,6 +394,27 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 		sb.WriteString("\n")
 	}
 
+	// Skill Sequence (nested sub-skills tree)
+	if m.cachedMetadata != nil && len(m.cachedMetadata.SkillSequence) > 0 {
+		sb.WriteString(sectionStyle.Render("Skill Sequence"))
+		sb.WriteString("\n")
+		visited := make(map[string]bool)
+		m.renderSkillSequenceTree(&sb, m.cachedMetadata.SkillSequence, "  ", visited)
+		sb.WriteString("\n")
+	}
+
+	// Produces (structured artifact display)
+	if m.cachedMetadata != nil && len(m.cachedMetadata.Produces) > 0 {
+		sb.WriteString(sectionStyle.Render("Produces"))
+		sb.WriteString("\n")
+		for _, artifact := range m.cachedMetadata.Produces {
+			sb.WriteString(fmt.Sprintf("  %s %s\n",
+				lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render(theme.IconStatusCompleted),
+				artifact))
+		}
+		sb.WriteString("\n")
+	}
+
 	// Preview (full SKILL.md content - viewport handles scrolling)
 	if m.cachedContent != "" {
 		sb.WriteString(sectionStyle.Render("Preview"))
@@ -404,6 +425,74 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	}
 
 	return sb.String()
+}
+
+// renderSkillSequenceTree recursively renders a skill sequence as a nested tree.
+// Each sub-skill shows its produces artifacts and recurses into its own skill_sequence.
+func (m *Model) renderSkillSequenceTree(sb *strings.Builder, sequence []string, indent string, visited map[string]bool) {
+	blueStyle := lipgloss.NewStyle().Foreground(m.theme.Colors.Blue)
+	greenStyle := lipgloss.NewStyle().Foreground(m.theme.Colors.Green)
+
+	for i, subSkill := range sequence {
+		isLast := i == len(sequence)-1
+		prefix := "├─"
+		childIndent := indent + "│  "
+		if isLast {
+			prefix = "└─"
+			childIndent = indent + "   "
+		}
+
+		// Load sub-skill metadata for produces and nested sequences
+		var subMeta *skills.SkillMetadata
+		if !visited[subSkill] {
+			subMeta = m.loadSkillMetadata(subSkill)
+		}
+
+		// Render skill name with description if available
+		line := subSkill
+		if subMeta != nil && subMeta.Description != "" {
+			line += " " + m.theme.Muted.Render("— "+subMeta.Description)
+		}
+		sb.WriteString(fmt.Sprintf("%s%s %s\n", indent, blueStyle.Render(prefix), line))
+
+		// Show produces for this sub-skill
+		if subMeta != nil && len(subMeta.Produces) > 0 {
+			for j, art := range subMeta.Produces {
+				artPrefix := "├─"
+				if j == len(subMeta.Produces)-1 && (subMeta.SkillSequence == nil || len(subMeta.SkillSequence) == 0) {
+					artPrefix = "└─"
+				}
+				sb.WriteString(fmt.Sprintf("%s%s %s %s\n", childIndent,
+					m.theme.Muted.Render(artPrefix),
+					greenStyle.Render(theme.IconStatusCompleted),
+					m.theme.Muted.Render(art)))
+			}
+		}
+
+		// Recursively resolve sub-skill's own skill_sequence
+		if subMeta != nil && len(subMeta.SkillSequence) > 0 {
+			visited[subSkill] = true
+			m.renderSkillSequenceTree(sb, subMeta.SkillSequence, childIndent, visited)
+			visited[subSkill] = false
+		}
+	}
+}
+
+// loadSkillMetadata loads metadata for a skill by name (for sub-skill resolution).
+func (m *Model) loadSkillMetadata(name string) *skills.SkillMetadata {
+	loaded, err := skills.LoadSkillBypassingAccessWithService(m.service, m.currentNode, name)
+	if err != nil {
+		return nil
+	}
+	content, ok := loaded.Files["SKILL.md"]
+	if !ok {
+		return nil
+	}
+	meta, err := skills.ParseSkillFrontmatter(content)
+	if err != nil {
+		return nil
+	}
+	return meta
 }
 
 // renderGroupDetails renders the group details for the viewport.

@@ -433,6 +433,7 @@ func (m *Model) updateViewportContent() {
 		m.cachedSkillName = "group:" + node.Name
 		m.cachedTree = ""
 		m.cachedContent = ""
+		m.cachedMetadata = nil
 		m.viewport.SetContent(m.renderGroupDetails(node))
 		return
 	}
@@ -469,6 +470,14 @@ func (m *Model) updateViewportContent() {
 		}
 	}
 	m.cachedContent = string(content)
+
+	// Parse metadata for skill_sequence and produces
+	m.cachedMetadata = nil
+	if len(content) > 0 {
+		if meta, err := skills.ParseSkillFrontmatter(content); err == nil {
+			m.cachedMetadata = meta
+		}
+	}
 
 	// Render to viewport
 	m.viewport.SetContent(m.renderSkillDetails(skill))
