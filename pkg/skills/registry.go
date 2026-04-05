@@ -86,6 +86,7 @@ func LoadSkillBypassingAccessWithService(svc *service.Service, node *workspace.W
 }
 
 // LoadSkillFromSource loads the files for a skill given its resolved SkillSource.
+// Uses RelPath for builtin skills to support nested paths.
 func LoadSkillFromSource(skillName string, src SkillSource) (*LoadedSkill, error) {
 	_, unqualifiedName := ResolveQualifiedSkillName(skillName)
 
@@ -93,7 +94,7 @@ func LoadSkillFromSource(skillName string, src SkillSource) (*LoadedSkill, error
 	var err error
 
 	if src.Type == SourceTypeBuiltin {
-		files, err = readSkillFromFS(embeddedSkillsFS, unqualifiedName)
+		files, err = readSkillFromFS(embeddedSkillsFS, src.RelPath)
 	} else {
 		files, err = readSkillFromDisk(src.Path)
 	}
@@ -118,7 +119,6 @@ func loadSkillInternal(svc *service.Service, node *workspace.WorkspaceNode, skil
 	var found bool
 
 	if wsName != "" {
-		// Handle workspace-qualified skills (e.g. "grovetools:concept-maintainer")
 		skill, err := FindSkillAcrossWorkspaces(svc, skillName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search workspaces: %w", err)
@@ -126,10 +126,9 @@ func loadSkillInternal(svc *service.Service, node *workspace.WorkspaceNode, skil
 		if skill == nil {
 			return nil, fmt.Errorf("skill '%s' not found in workspace '%s'", unqualifiedName, wsName)
 		}
-		src = SkillSource{Path: skill.Path, Type: SourceTypeEcosystem}
+		src = SkillSource{Path: skill.Path, RelPath: skill.RelPath, Type: SourceTypeEcosystem}
 		found = true
 	} else {
-		// Normal precedence resolution
 		sources := ListSkillSources(svc, node)
 		src, found = sources[unqualifiedName]
 	}

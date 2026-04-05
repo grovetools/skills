@@ -258,9 +258,12 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 			}
 		}
 
-		// Determine group based on source type and domain
+		// Determine group based on nested RelPath, domain, or source type
 		group := "uncategorized"
-		if domain != "" && domain != "uncategorized" {
+		relDir := filepath.Dir(src.RelPath)
+		if relDir != "." && relDir != "" {
+			group = relDir
+		} else if domain != "" && domain != "uncategorized" {
 			group = domain
 		} else if src.Type == skills.SourceTypeUser {
 			group = "User Skills"
@@ -297,10 +300,13 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 			}
 		}
 
-		// Group workspace skills by their workspace name
-		group := ws.Workspace
-		if group == "" {
-			group = "Workspace Skills"
+		// Group workspace skills by their workspace name, with nested RelPath support
+		group := "Workspace Skills"
+		relDir := filepath.Dir(ws.RelPath)
+		if relDir != "." && relDir != "" {
+			group = filepath.Join(ws.Workspace, relDir)
+		} else if ws.Workspace != "" {
+			group = ws.Workspace
 		}
 
 		allSkills = append(allSkills, skillEntry{

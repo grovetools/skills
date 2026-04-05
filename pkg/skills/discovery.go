@@ -11,7 +11,7 @@ import (
 
 // WorkspaceSkill represents a skill discovered from a workspace's notebook.
 type WorkspaceSkill struct {
-	// Name is the skill name (directory name).
+	// Name is the skill name (leaf directory name containing SKILL.md).
 	Name string
 
 	// Workspace is the name of the workspace this skill belongs to.
@@ -23,12 +23,14 @@ type WorkspaceSkill struct {
 	// Path is the absolute path to the skill directory.
 	Path string
 
+	// RelPath is the nested path relative to the skills directory root (e.g. "kitchen/prep").
+	RelPath string
+
 	// Description is extracted from SKILL.md frontmatter.
 	Description string
 }
 
 // ListAllWorkspaceSkills discovers skills from all registered workspaces.
-// This is similar to `nb concept list --all-workspaces`.
 func ListAllWorkspaceSkills(svc *service.Service) ([]WorkspaceSkill, error) {
 	if svc == nil || svc.Provider == nil {
 		return nil, nil
@@ -37,11 +39,10 @@ func ListAllWorkspaceSkills(svc *service.Service) ([]WorkspaceSkill, error) {
 	var allSkills []WorkspaceSkill
 	seenPaths := make(map[string]bool)
 
-	allWorkspaces := svc.Provider.All()
-	for _, ws := range allWorkspaces {
+	for _, ws := range svc.Provider.All() {
 		skills, err := listSkillsForWorkspace(svc, ws, seenPaths)
 		if err != nil {
-			continue // Skip workspaces we can't read
+			continue
 		}
 		allSkills = append(allSkills, skills...)
 	}
@@ -50,13 +51,11 @@ func ListAllWorkspaceSkills(svc *service.Service) ([]WorkspaceSkill, error) {
 }
 
 // ListEcosystemSkills discovers skills from all workspaces in the current ecosystem.
-// This is similar to `nb concept list --ecosystem`.
 func ListEcosystemSkills(svc *service.Service, currentNode *workspace.WorkspaceNode) ([]WorkspaceSkill, error) {
 	if svc == nil || svc.Provider == nil || currentNode == nil {
 		return nil, nil
 	}
 
-	// Determine the ecosystem root path
 	var ecosystemRootPath string
 
 	switch currentNode.Kind {
@@ -73,7 +72,6 @@ func ListEcosystemSkills(svc *service.Service, currentNode *workspace.WorkspaceN
 			ecosystemRootPath = currentNode.ParentEcosystemPath
 		}
 	default:
-		// Not in an ecosystem - return skills from current workspace only
 		return listSkillsForWorkspace(svc, currentNode, nil)
 	}
 
@@ -84,10 +82,7 @@ func ListEcosystemSkills(svc *service.Service, currentNode *workspace.WorkspaceN
 	var allSkills []WorkspaceSkill
 	seenPaths := make(map[string]bool)
 
-	// Find all workspaces that belong to this ecosystem
-	allWorkspaces := svc.Provider.All()
-	for _, ws := range allWorkspaces {
-		// Check if this workspace is part of the ecosystem
+	for _, ws := range svc.Provider.All() {
 		isInEcosystem := ws.Path == ecosystemRootPath ||
 			ws.RootEcosystemPath == ecosystemRootPath ||
 			ws.ParentEcosystemPath == ecosystemRootPath
@@ -107,18 +102,18 @@ func ListEcosystemSkills(svc *service.Service, currentNode *workspace.WorkspaceN
 }
 
 // listSkillsForWorkspace lists skills from a single workspace's notebook.
+// Uses recursive WalkDir to discover nested skills. Skill name is the leaf directory
+// containing SKILL.md. Directories without SKILL.md are organizational folders.
 func listSkillsForWorkspace(svc *service.Service, ws *workspace.WorkspaceNode, seenPaths map[string]bool) ([]WorkspaceSkill, error) {
 	if svc.NotebookLocator == nil {
 		return nil, nil
 	}
 
-	// Get skills directory for this workspace
 	skillsDir, err := svc.NotebookLocator.GetSkillsDir(ws)
 	if err != nil || skillsDir == "" {
 		return nil, nil
 	}
 
-	// Skip if we've already processed this directory
 	if seenPaths != nil {
 		if seenPaths[skillsDir] {
 			return nil, nil
@@ -126,26 +121,25 @@ func listSkillsForWorkspace(svc *service.Service, ws *workspace.WorkspaceNode, s
 		seenPaths[skillsDir] = true
 	}
 
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		return nil, err
-	}
-
 	var skills []WorkspaceSkill
 	workspaceName := ws.Name
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	filepath.WalkDir(skillsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
 		}
 
-		skillName := entry.Name()
-		skillPath := filepath.Join(skillsDir, skillName)
+		skillPath := filepath.Dir(path)
+		relPath, _ := filepath.Rel(skillsDir, skillPath)
+		if strings.Count(filepath.ToSlash(relPath), "/") > 4 {
+			return nil
+		}
 
-		// Try to get description from SKILL.md
+		// Skill name is the leaf directory
+		skillName := filepath.Base(skillPath)
+
 		description := ""
-		skillMDPath := filepath.Join(skillPath, "SKILL.md")
-		if content, err := os.ReadFile(skillMDPath); err == nil {
+		if content, err := os.ReadFile(path); err == nil {
 			if meta, err := ParseSkillFrontmatter(content); err == nil {
 				description = meta.Description
 			}
@@ -156,9 +150,12 @@ func listSkillsForWorkspace(svc *service.Service, ws *workspace.WorkspaceNode, s
 			Workspace:     workspaceName,
 			QualifiedName: workspaceName + ":" + skillName,
 			Path:          skillPath,
+			RelPath:       relPath,
 			Description:   description,
 		})
-	}
+
+		return nil
+	})
 
 	return skills, nil
 }
@@ -184,13 +181,11 @@ func FindSkillAcrossWorkspaces(svc *service.Service, qualifiedName string) (*Wor
 	}
 
 	for _, skill := range allSkills {
-		// If workspace is specified, match exactly
 		if workspaceName != "" {
 			if skill.Workspace == workspaceName && skill.Name == skillName {
 				return &skill, nil
 			}
 		} else {
-			// If no workspace specified, match just by name
 			if skill.Name == skillName {
 				return &skill, nil
 			}

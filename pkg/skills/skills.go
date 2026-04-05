@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/grovetools/skills/pkg/service" // used by ListSkillsWithService, getUserSkillsPathWithConfig
+	"github.com/grovetools/skills/pkg/service"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,7 +49,6 @@ func ValidateSkillContent(content []byte, expectedName string) error {
 
 	var errors []string
 
-	// Validate name
 	if metadata.Name == "" {
 		errors = append(errors, "missing required field 'name'")
 	} else {
@@ -64,7 +63,6 @@ func ValidateSkillContent(content []byte, expectedName string) error {
 		}
 	}
 
-	// Validate description
 	if metadata.Description == "" {
 		errors = append(errors, "missing required field 'description'")
 	} else if len(metadata.Description) > 1024 {
@@ -80,12 +78,10 @@ func ValidateSkillContent(content []byte, expectedName string) error {
 
 // ParseSkillFrontmatter extracts and parses YAML frontmatter from SKILL.md content
 func ParseSkillFrontmatter(content []byte) (*SkillMetadata, error) {
-	// Frontmatter must start with "---" on line 1
 	if !bytes.HasPrefix(content, []byte("---")) {
 		return nil, fmt.Errorf("SKILL.md must start with '---' frontmatter delimiter")
 	}
 
-	// Find the closing "---"
 	rest := content[3:]
 	endIdx := bytes.Index(rest, []byte("\n---"))
 	if endIdx == -1 {
@@ -120,38 +116,31 @@ func getUserSkillsPath() string {
 }
 
 // getUserSkillsPathWithConfig returns the user skills path.
-// The service parameter is kept for API compatibility but is currently unused.
 func getUserSkillsPathWithConfig(svc *service.Service) string {
-	_ = svc // Unused, kept for API compatibility
+	_ = svc
 	return getUserSkillsPath()
 }
 
 // ListBuiltinSkills returns a list of all built-in skill names.
+// Uses recursive WalkDir to discover nested builtin skills.
 func ListBuiltinSkills() []string {
-	entries, err := fs.ReadDir(embeddedSkillsFS, "data/skills")
-	if err != nil {
-		return nil
-	}
-
 	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			names = append(names, entry.Name())
+	fs.WalkDir(embeddedSkillsFS, "data/skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
 		}
-	}
+		names = append(names, filepath.Base(filepath.Dir(path)))
+		return nil
+	})
 	return names
 }
 
 // ListSkills returns a slice of available skill names and a map indicating their source.
-// Precedence: notebook > user > builtin
-// Skills with the same name as a skill from a lower-precedence source will take precedence.
 func ListSkills() ([]string, map[string]string, error) {
 	return ListSkillsWithService(nil)
 }
 
 // ListSkillsWithService returns a slice of available skill names and a map indicating their source.
-// If a service is provided, notebook skills will also be discovered.
-// Precedence: notebook > user > builtin
 func ListSkillsWithService(svc *service.Service) ([]string, map[string]string, error) {
 	sources := ListSkillSources(svc, nil)
 
@@ -193,9 +182,10 @@ func readSkillFromDisk(skillRoot string) (map[string][]byte, error) {
 }
 
 // readSkillFromFS reads all files for a skill from an fs.FS.
-func readSkillFromFS(srcFS fs.FS, name string) (map[string][]byte, error) {
+// relPath is the path relative to data/skills (e.g. "sear/heat-pan" or just "my-skill").
+func readSkillFromFS(srcFS fs.FS, relPath string) (map[string][]byte, error) {
 	skillFiles := make(map[string][]byte)
-	skillRoot := filepath.Join("data/skills", name)
+	skillRoot := filepath.Join("data/skills", relPath)
 	err := fs.WalkDir(srcFS, skillRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -203,17 +193,16 @@ func readSkillFromFS(srcFS fs.FS, name string) (map[string][]byte, error) {
 		if d.IsDir() {
 			return nil
 		}
-		relPath, _ := filepath.Rel(skillRoot, path)
+		rp, _ := filepath.Rel(skillRoot, path)
 		content, err := fs.ReadFile(srcFS, path)
 		if err != nil {
 			return err
 		}
-		skillFiles[relPath] = content
+		skillFiles[rp] = content
 		return nil
 	})
 	if err != nil || len(skillFiles) == 0 {
-		return nil, fmt.Errorf("skill '%s' not found", name)
+		return nil, fmt.Errorf("skill '%s' not found", relPath)
 	}
 	return skillFiles, nil
 }
-

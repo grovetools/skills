@@ -25,6 +25,8 @@ func main() {
 		RegistryScenario(),
 		// Daemon Scenarios
 		GrovedSkillSyncScenario(),
+		// Nested Skills
+		NestedSkillsScenario(),
 		// TUI Scenarios
 		TUIScenario(),
 		TUIWorkspaceScenario(),

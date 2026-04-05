@@ -2,6 +2,9 @@ package skills
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/skills/pkg/service"
@@ -18,82 +21,86 @@ type ResolvedSkill struct {
 	// PhysicalPath is the path to the skill directory (or "(builtin)" for embedded).
 	PhysicalPath string
 
+	// RelPath is the nested path relative to skills dir (e.g. "sear/heat-pan").
+	RelPath string
+
 	// Providers lists which agent providers should receive this skill.
 	Providers []string
 }
 
 // ResolveConfiguredSkills resolves all skills declared in the configuration.
-// It returns a map of skill names to their resolved information.
-// Returns an error if any declared skill cannot be resolved.
-// Supports workspace-qualified names like "grovetools:concept-maintainer".
+// It also recursively traverses SKILL.md dependencies to implicitly resolve
+// nested sub-skills (via skill_sequence and requires).
 func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode, cfg *SkillsConfig) (map[string]ResolvedSkill, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 
-	// Get all available skill sources (local precedence)
 	availableSources := ListSkillSources(svc, node)
-
-	// Determine default providers
 	defaultProviders := cfg.Providers
 	if len(defaultProviders) == 0 {
 		defaultProviders = []string{"claude"}
 	}
 
 	resolved := make(map[string]ResolvedSkill)
+	inProgress := make(map[string]bool)
 
-	// Process all skills in the Use array
-	for _, skillName := range cfg.Use {
-		targetProviders := defaultProviders
-		expectedSource := ""
+	var resolveTransitive func(skillName string, targetProviders []string, expectedSource string) error
+	resolveTransitive = func(skillName string, targetProviders []string, expectedSource string) error {
+		// Detect circular dependencies
+		if inProgress[skillName] {
+			return fmt.Errorf("circular skill sequence dependency detected: %s", skillName)
+		}
+		if _, exists := resolved[skillName]; exists {
+			return nil // Already resolved
+		}
+
+		inProgress[skillName] = true
+		defer func() { delete(inProgress, skillName) }()
+
 		resolveName := skillName
+		depProviders := targetProviders
+		depSource := expectedSource
 
-		// Check for explicit dependency configuration
 		if dep, exists := cfg.Dependencies[skillName]; exists {
 			if len(dep.Providers) > 0 {
-				targetProviders = dep.Providers
+				depProviders = dep.Providers
 			}
 			if dep.Source != "" {
-				expectedSource = dep.Source
+				depSource = dep.Source
 			}
 			if dep.Name != "" {
 				resolveName = dep.Name
 			}
 		}
 
-		// Check if this is a workspace-qualified name (e.g., "grovetools:concept-maintainer")
 		wsName, unqualifiedName := ResolveQualifiedSkillName(resolveName)
-
 		var src SkillSource
 		var found bool
 
 		if wsName != "" {
-			// Look up across all workspaces
 			skill, err := FindSkillAcrossWorkspaces(svc, resolveName)
 			if err != nil || skill == nil {
-				return nil, fmt.Errorf("skill '%s' declared in config but not found in workspace '%s'", skillName, wsName)
+				return fmt.Errorf("skill '%s' declared in config but not found in workspace '%s'", skillName, wsName)
 			}
 			src = SkillSource{
-				Path: skill.Path,
-				Type: SourceTypeEcosystem, // Workspace skills are treated as ecosystem type
+				Path:    skill.Path,
+				RelPath: skill.RelPath,
+				Type:    SourceTypeEcosystem,
 			}
 			found = true
-			// Use unqualified name for the resolved skill
 			resolveName = unqualifiedName
 		} else {
-			// Look up in local sources first
 			src, found = availableSources[resolveName]
 		}
 
 		if !found {
-			return nil, fmt.Errorf("skill '%s' declared in config but not found in any source", skillName)
+			return fmt.Errorf("skill '%s' declared in config but not found in any source", skillName)
 		}
 
-		// If a specific source was requested, verify it matches
-		if expectedSource != "" && wsName == "" {
-			expectedType := sourceStringToType(expectedSource)
+		if depSource != "" && wsName == "" {
+			expectedType := sourceStringToType(depSource)
 			if expectedType != "" && src.Type != expectedType {
-				// Try to find the skill specifically from the requested source
 				sourceFound := false
 				for name, s := range availableSources {
 					if name == resolveName && s.Type == expectedType {
@@ -103,78 +110,59 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 					}
 				}
 				if !sourceFound {
-					return nil, fmt.Errorf("skill '%s' requested from source '%s' but found in '%s'",
-						skillName, expectedSource, src.Type)
+					return fmt.Errorf("skill '%s' requested from source '%s' but found in '%s'",
+						skillName, depSource, src.Type)
 				}
 			}
 		}
 
-		// Use unqualified name as the key (the name that will be used in .claude/skills/)
 		resolved[unqualifiedName] = ResolvedSkill{
 			Name:         unqualifiedName,
 			SourceType:   src.Type,
 			PhysicalPath: src.Path,
-			Providers:    targetProviders,
+			RelPath:      src.RelPath,
+			Providers:    depProviders,
+		}
+
+		// Read SKILL.md to recursively resolve implicit dependencies (skill_sequence, requires)
+		var content []byte
+		var err error
+		if src.Type == SourceTypeBuiltin {
+			content, err = fs.ReadFile(embeddedSkillsFS, filepath.Join("data/skills", src.RelPath, "SKILL.md"))
+		} else {
+			content, err = os.ReadFile(filepath.Join(src.Path, "SKILL.md"))
+		}
+
+		if err == nil {
+			if meta, err := ParseSkillFrontmatter(content); err == nil {
+				for _, req := range meta.Requires {
+					if err := resolveTransitive(req, depProviders, ""); err != nil {
+						return err
+					}
+				}
+				for _, seq := range meta.SkillSequence {
+					if err := resolveTransitive(seq, depProviders, ""); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		return nil
+	}
+
+	for _, skillName := range cfg.Use {
+		if err := resolveTransitive(skillName, defaultProviders, ""); err != nil {
+			return nil, err
 		}
 	}
 
-	// Also process skills that are only in dependencies (not in Use array)
-	for skillName, dep := range cfg.Dependencies {
-		// Skip if already processed via Use array
-		_, wsName := ResolveQualifiedSkillName(skillName)
-		if _, exists := resolved[wsName]; exists {
-			continue
-		}
-
-		targetProviders := defaultProviders
-		if len(dep.Providers) > 0 {
-			targetProviders = dep.Providers
-		}
-
-		resolveName := skillName
-		if dep.Name != "" {
-			resolveName = dep.Name
-		}
-
-		// Check if this is a workspace-qualified name
-		qualWs, unqualifiedName := ResolveQualifiedSkillName(resolveName)
-
-		var src SkillSource
-		var found bool
-
-		if qualWs != "" {
-			skill, err := FindSkillAcrossWorkspaces(svc, resolveName)
-			if err != nil || skill == nil {
-				return nil, fmt.Errorf("skill '%s' declared in dependencies but not found in workspace '%s'", skillName, qualWs)
+	for skillName := range cfg.Dependencies {
+		_, unqualifiedName := ResolveQualifiedSkillName(skillName)
+		if _, exists := resolved[unqualifiedName]; !exists {
+			if err := resolveTransitive(skillName, defaultProviders, ""); err != nil {
+				return nil, err
 			}
-			src = SkillSource{
-				Path: skill.Path,
-				Type: SourceTypeEcosystem,
-			}
-			found = true
-			resolveName = unqualifiedName
-		} else {
-			src, found = availableSources[resolveName]
-		}
-
-		if !found {
-			return nil, fmt.Errorf("skill '%s' declared in dependencies but not found in any source", skillName)
-		}
-
-		// If a specific source was requested, verify it matches
-		if dep.Source != "" && qualWs == "" {
-			expectedType := sourceStringToType(dep.Source)
-			if expectedType != "" && src.Type != expectedType {
-				return nil, fmt.Errorf("skill '%s' requested from source '%s' but found in '%s'",
-					skillName, dep.Source, src.Type)
-			}
-		}
-
-		resolved[unqualifiedName] = ResolvedSkill{
-			Name:         unqualifiedName,
-			SourceType:   src.Type,
-			PhysicalPath: src.Path,
-			Providers:    targetProviders,
 		}
 	}
 
@@ -193,7 +181,6 @@ func sourceStringToType(s string) SourceType {
 	case "project":
 		return SourceTypeProject
 	case "notebook":
-		// "notebook" maps to either ecosystem or project, we'll accept either
 		return ""
 	default:
 		return ""

@@ -2,11 +2,13 @@ package skills
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/grovetools/core/config"
-	"github.com/grovetools/core/fs"
+	corefs "github.com/grovetools/core/fs"
 	"github.com/grovetools/core/git"
 	"github.com/grovetools/core/logging"
 	"github.com/grovetools/core/pkg/workspace"
@@ -14,60 +16,89 @@ import (
 	"github.com/grovetools/skills/pkg/service"
 )
 
+// SourceType indicates where a skill comes from
+type SourceType string
+
+const (
+	SourceTypeBuiltin   SourceType = "builtin"
+	SourceTypeUser      SourceType = "user"
+	SourceTypeEcosystem SourceType = "ecosystem"
+	SourceTypeProject   SourceType = "project"
+)
+
+// SkillSource represents a skill's origin
+type SkillSource struct {
+	Path    string
+	RelPath string // Path relative to the root of the skills directory (e.g. "sear/heat-pan")
+	Type    SourceType
+}
+
+// addSkillSourceSafely adds a skill source, handling duplicates by preferring the shallowest path
+// within the same source type. Across different source types, later calls overwrite earlier ones
+// (callers are responsible for calling in precedence order).
+func addSkillSourceSafely(sources map[string]SkillSource, name string, newSource SkillSource) {
+	existing, ok := sources[name]
+	if !ok {
+		sources[name] = newSource
+		return
+	}
+	if newSource.Type == existing.Type {
+		newDepth := strings.Count(filepath.ToSlash(newSource.RelPath), "/")
+		existingDepth := strings.Count(filepath.ToSlash(existing.RelPath), "/")
+		if newDepth < existingDepth {
+			sources[name] = newSource
+		}
+	} else {
+		// Later source types overwrite earlier ones (called in precedence order)
+		sources[name] = newSource
+	}
+}
+
 // SyncSkillsToDirectory copies all discoverable skills to a destination directory.
 // Skills are collected from multiple sources with the following precedence (higher wins):
-//   1. Built-in/embedded skills (lowest precedence)
-//   2. User skills from ~/.config/grove/skills
-//   3. Ecosystem skills from the notebook (if project is part of an ecosystem)
-//   4. Project skills from the notebook (highest precedence)
+//   1. User skills from ~/.config/grove/skills
+//   2. Ecosystem skills from the notebook (if project is part of an ecosystem)
+//   3. Project skills from the notebook (highest precedence)
 //
-// This is useful for syncing skills to worktrees or other isolated environments.
+// Supports nested skill directories: skills/kitchen/prep/SKILL.md resolves as skill "prep"
+// and is synced preserving its relative path.
 func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, destDir string) (int, error) {
 	if node == nil {
 		return 0, fmt.Errorf("workspace node is required")
 	}
 
-	// Collect skills from all sources (lower precedence first, higher overwrites)
-	// Map: skillName -> sourcePath
+	// Map: relPath -> sourcePath (relPath preserves nesting)
 	skillSources := make(map[string]string)
 
-	// 1. User skills
 	userSkillsPath := getUserSkillsPathWithConfig(svc)
 	if userSkillsPath != "" {
 		collectSkillsFromDir(userSkillsPath, skillSources)
 	}
 
-	// 2. Ecosystem skills (if project is part of an ecosystem)
 	if node.RootEcosystemPath != "" {
-		ecoSkillsDir := getEcosystemSkillsDir(svc, node)
-		if ecoSkillsDir != "" {
-			collectSkillsFromDir(ecoSkillsDir, skillSources)
+		if ecoDir := getEcosystemSkillsDir(svc, node); ecoDir != "" {
+			collectSkillsFromDir(ecoDir, skillSources)
 		}
 	}
 
-	// 3. Project skills (highest precedence)
-	projectSkillsDir := getProjectSkillsDir(svc, node)
-	if projectSkillsDir != "" {
-		collectSkillsFromDir(projectSkillsDir, skillSources)
+	if projDir := getProjectSkillsDir(svc, node); projDir != "" {
+		collectSkillsFromDir(projDir, skillSources)
 	}
 
 	if len(skillSources) == 0 {
 		return 0, nil
 	}
 
-	// Ensure destination directory exists
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return 0, fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
-	// Copy each skill directory
 	var syncedCount int
 	var lastErr error
-	for skillName, srcPath := range skillSources {
-		destPath := filepath.Join(destDir, skillName)
-
-		if err := fs.CopyDir(srcPath, destPath); err != nil {
-			lastErr = fmt.Errorf("failed to sync skill %s: %w", skillName, err)
+	for relPath, srcPath := range skillSources {
+		destPath := filepath.Join(destDir, relPath)
+		if err := corefs.CopyDir(srcPath, destPath); err != nil {
+			lastErr = fmt.Errorf("failed to sync skill %s: %w", filepath.Base(relPath), err)
 		} else {
 			syncedCount++
 		}
@@ -76,8 +107,88 @@ func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, 
 	return syncedCount, lastErr
 }
 
+// collectSkillsFromDir recursively scans a directory for SKILL.md files and adds them to the map.
+// The map key is the relative path from dir to the skill directory (preserving nesting).
+// Directories without SKILL.md are treated as organizational folders and skipped.
+func collectSkillsFromDir(dir string, skillSources map[string]string) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return
+	}
+
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+
+		skillPath := filepath.Dir(path)
+		relDir, _ := filepath.Rel(dir, skillPath)
+		// Prevent infinite scanning of deeply nested directories
+		if strings.Count(filepath.ToSlash(relDir), "/") > 4 {
+			return nil
+		}
+
+		skillSources[relDir] = skillPath
+		return nil
+	})
+}
+
+// addSkillSources recursively discovers skills from a directory and adds them to the sources map.
+// Skill name is always the leaf directory containing SKILL.md.
+// Directories without SKILL.md are organizational folders — they are recursed into but not added.
+func addSkillSources(dir string, sourceType SourceType, sources map[string]SkillSource) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return
+	}
+
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+
+		skillPath := filepath.Dir(path)
+		relDir, _ := filepath.Rel(dir, skillPath)
+		if strings.Count(filepath.ToSlash(relDir), "/") > 4 {
+			return nil
+		}
+
+		// Skill name is the leaf directory containing SKILL.md
+		skillName := filepath.Base(skillPath)
+
+		addSkillSourceSafely(sources, skillName, SkillSource{
+			Path:    skillPath,
+			RelPath: relDir,
+			Type:    sourceType,
+		})
+		return nil
+	})
+}
+
+// addBuiltinSkillSources adds embedded/built-in skills to the sources map.
+// Supports nested builtin skills by walking the embedded FS recursively.
+func addBuiltinSkillSources(sources map[string]SkillSource) {
+	fs.WalkDir(embeddedSkillsFS, "data/skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+
+		skillPath := filepath.Dir(path)
+		relDir, _ := filepath.Rel("data/skills", skillPath)
+		if strings.Count(filepath.ToSlash(relDir), "/") > 4 {
+			return nil
+		}
+
+		skillName := filepath.Base(skillPath)
+
+		addSkillSourceSafely(sources, skillName, SkillSource{
+			Path:    "(builtin)",
+			RelPath: relDir,
+			Type:    SourceTypeBuiltin,
+		})
+		return nil
+	})
+}
+
 // ListSkillSources returns a map of skill names to their source paths.
-// This is useful for displaying where skills come from.
 // Skills are listed in precedence order (later sources override earlier):
 //   1. Built-in skills (embedded in binary)
 //   2. User skills (~/.config/grove/skills)
@@ -87,34 +198,23 @@ func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, 
 func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[string]SkillSource {
 	sources := make(map[string]SkillSource)
 
-	// 1. Built-in skills (lowest precedence)
 	addBuiltinSkillSources(sources)
 
-	// 2. User skills
-	userSkillsPath := getUserSkillsPathWithConfig(svc)
-	if userSkillsPath != "" {
-		addSkillSources(userSkillsPath, SourceTypeUser, sources)
+	if userPath := getUserSkillsPathWithConfig(svc); userPath != "" {
+		addSkillSources(userPath, SourceTypeUser, sources)
 	}
 
-	// 3. Notebook skills (scan all configured notebook workspaces)
-	// This allows globally-declared skills to be found regardless of which
-	// workspace is being resolved. Skills from the current workspace's own
-	// ecosystem/project override these in steps 4-5.
 	addNotebookSkillSources(svc, sources)
 
-	// 4. Ecosystem skills
 	if node != nil && node.RootEcosystemPath != "" {
-		ecoSkillsDir := getEcosystemSkillsDir(svc, node)
-		if ecoSkillsDir != "" {
-			addSkillSources(ecoSkillsDir, SourceTypeEcosystem, sources)
+		if ecoDir := getEcosystemSkillsDir(svc, node); ecoDir != "" {
+			addSkillSources(ecoDir, SourceTypeEcosystem, sources)
 		}
 	}
 
-	// 5. Project skills (highest precedence)
 	if node != nil {
-		projectSkillsDir := getProjectSkillsDir(svc, node)
-		if projectSkillsDir != "" {
-			addSkillSources(projectSkillsDir, SourceTypeProject, sources)
+		if projDir := getProjectSkillsDir(svc, node); projDir != "" {
+			addSkillSources(projDir, SourceTypeProject, sources)
 		}
 	}
 
@@ -122,8 +222,6 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 }
 
 // addNotebookSkillSources scans all configured notebook definitions for skill directories.
-// This enables skills declared in global config to be resolved from any notebook,
-// not just the current workspace's own notebook.
 func addNotebookSkillSources(svc *service.Service, sources map[string]SkillSource) {
 	if svc == nil || svc.Config == nil || svc.Config.Notebooks == nil {
 		return
@@ -155,48 +253,12 @@ func addNotebookSkillSources(svc *service.Service, sources map[string]SkillSourc
 	}
 }
 
-// addBuiltinSkillSources adds embedded/built-in skills to the sources map
-func addBuiltinSkillSources(sources map[string]SkillSource) {
-	entries, err := embeddedSkillsFS.ReadDir("data/skills")
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		skillName := entry.Name()
-		sources[skillName] = SkillSource{
-			Path: "(builtin)",
-			Type: SourceTypeBuiltin,
-		}
-	}
-}
-
-// SourceType indicates where a skill comes from
-type SourceType string
-
-const (
-	SourceTypeBuiltin   SourceType = "builtin"
-	SourceTypeUser      SourceType = "user"
-	SourceTypeEcosystem SourceType = "ecosystem"
-	SourceTypeProject   SourceType = "project"
-)
-
-// SkillSource represents a skill's origin
-type SkillSource struct {
-	Path string
-	Type SourceType
-}
-
 // getEcosystemSkillsDir returns the skills directory for the ecosystem containing the node
 func getEcosystemSkillsDir(svc *service.Service, node *workspace.WorkspaceNode) string {
 	if svc == nil || svc.NotebookLocator == nil || node.RootEcosystemPath == "" {
 		return ""
 	}
 
-	// Create a synthetic node for the ecosystem
 	ecoNode := &workspace.WorkspaceNode{
 		Name:         filepath.Base(node.RootEcosystemPath),
 		Path:         node.RootEcosystemPath,
@@ -207,12 +269,9 @@ func getEcosystemSkillsDir(svc *service.Service, node *workspace.WorkspaceNode) 
 	if err != nil {
 		return ""
 	}
-
-	// Verify directory exists
 	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
 		return ""
 	}
-
 	return skillsDir
 }
 
@@ -226,73 +285,25 @@ func getProjectSkillsDir(svc *service.Service, node *workspace.WorkspaceNode) st
 	if err != nil {
 		return ""
 	}
-
-	// Verify directory exists
 	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
 		return ""
 	}
-
 	return skillsDir
 }
 
-// collectSkillsFromDir scans a directory for skill subdirectories and adds them to the map
-func collectSkillsFromDir(dir string, skillSources map[string]string) {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		skillName := entry.Name()
-		skillSources[skillName] = filepath.Join(dir, skillName)
-	}
-}
-
-// addSkillSources adds skills from a directory to the sources map
-func addSkillSources(dir string, sourceType SourceType, sources map[string]SkillSource) {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		skillName := entry.Name()
-		sources[skillName] = SkillSource{
-			Path: filepath.Join(dir, skillName),
-			Type: sourceType,
-		}
-	}
-}
-
 // GetSkillsDirectoryForWorktree returns the standard skills directory path for a worktree.
-// This is the destination path where skills should be synced to.
 func GetSkillsDirectoryForWorktree(worktreePath, provider string) string {
 	switch provider {
 	case "codex":
 		return filepath.Join(worktreePath, ".codex", "skills")
 	case "opencode":
 		return filepath.Join(worktreePath, ".opencode", "skill")
-	default: // claude
+	default:
 		return filepath.Join(worktreePath, ".claude", "skills")
 	}
 }
 
 // NewServiceForNode creates a minimal service for skill operations on a specific node.
-// This is useful when you don't have a full service but need skill discovery.
 func NewServiceForNode(node *workspace.WorkspaceNode) (*service.Service, error) {
 	cfg, err := config.LoadDefault()
 	if err != nil {
@@ -322,7 +333,6 @@ type SyncResult struct {
 }
 
 // SyncWorkspace resolves and installs skills for a single workspace node.
-// Returns the sync result containing synced skill names, destination paths, and any error.
 func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts SyncOptions, logger *logging.PrettyLogger) (*SyncResult, error) {
 	result := &SyncResult{
 		Workspace: "global",
@@ -337,7 +347,6 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 
 	gitRoot, err := git.GetGitRoot(node.Path)
 	if err != nil {
-		// Fallback to the project's root path if it is not a git repository
 		gitRoot = node.Path
 	}
 
@@ -351,12 +360,11 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		providers = skillsCfg.Providers
 	}
 
-	// If no skills configured, clean up all skills from destination
 	if skillsCfg == nil || (len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0) {
 		if opts.Prune && !opts.DryRun {
 			for _, provider := range providers {
 				destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
-				cleanupRemovedSkills(destBaseDir, nil) // nil means remove all
+				cleanupRemovedSkills(destBaseDir, nil)
 			}
 		}
 		return result, nil
@@ -367,7 +375,6 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		return result, fmt.Errorf("failed to resolve skills: %w", err)
 	}
 
-	// Even if no skills resolved, we may need to clean up
 	if len(resolved) == 0 {
 		if opts.Prune && !opts.DryRun {
 			for _, provider := range providers {
@@ -378,7 +385,6 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		return result, nil
 	}
 
-	// Collect expected output paths
 	var synced []string
 	destPathsMap := make(map[string]bool)
 	for name, r := range resolved {
@@ -416,49 +422,40 @@ func cleanupRemovedSkills(skillsDir string, configuredSkills map[string]bool) {
 		if !entry.IsDir() {
 			continue
 		}
-		skillName := entry.Name()
-		// If configuredSkills is nil, remove all; otherwise check if configured
-		if configuredSkills == nil || !configuredSkills[skillName] {
-			// This skill is no longer configured, remove it
-			os.RemoveAll(filepath.Join(skillsDir, skillName))
+		if configuredSkills == nil || !configuredSkills[entry.Name()] {
+			os.RemoveAll(filepath.Join(skillsDir, entry.Name()))
 		}
 	}
 }
 
 // SyncConfiguredSkills syncs resolved skills to their target provider directories.
-// It writes skills to the provider-specific directory within the git root.
-// If prune is true, skills not in the resolved map are removed from the destination.
+// Uses RelPath from resolved skills to preserve nested directory structure.
 func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, prune bool, logger *logging.PrettyLogger) (int, error) {
 	syncedCount := 0
 	var lastErr error
 
-	// Track what we installed per provider for pruning
+	// Track installed RelPaths per provider for pruning
 	installedPerProvider := make(map[string]map[string]bool)
 
-	// Sync each skill to its target providers
 	for skillName, r := range resolved {
 		for _, provider := range r.Providers {
 			destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
-			destPath := filepath.Join(destBaseDir, skillName)
+			destPath := filepath.Join(destBaseDir, r.RelPath)
 
 			if installedPerProvider[provider] == nil {
 				installedPerProvider[provider] = make(map[string]bool)
 			}
-			installedPerProvider[provider][skillName] = true
+			installedPerProvider[provider][r.RelPath] = true
 
-			// Ensure base directory exists
 			if err := os.MkdirAll(destBaseDir, 0755); err != nil {
 				lastErr = fmt.Errorf("failed to create directory %s: %w", destBaseDir, err)
 				continue
 			}
 
-			// Remove existing skill directory before writing
 			os.RemoveAll(destPath)
 
-			// Handle builtin vs local skills
 			if r.SourceType == SourceTypeBuiltin {
-				// Extract from embedded FS
-				files, err := readSkillFromFS(embeddedSkillsFS, skillName)
+				files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
 				if err != nil {
 					lastErr = err
 					continue
@@ -482,8 +479,7 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 				}
 				syncedCount++
 			} else {
-				// Copy from local filesystem
-				if err := fs.CopyDir(r.PhysicalPath, destPath); err != nil {
+				if err := corefs.CopyDir(r.PhysicalPath, destPath); err != nil {
 					lastErr = fmt.Errorf("failed to copy skill %s: %w", skillName, err)
 				} else {
 					syncedCount++
@@ -492,14 +488,11 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 		}
 	}
 
-	// Prune skills not in config if requested
 	if prune {
 		pruneSkillsDir(gitRoot, installedPerProvider, logger)
 	}
 
-	// Also sync to any worktrees under .grove-worktrees/
 	syncSkillsToWorktrees(gitRoot, resolved, installedPerProvider, prune, logger)
-
 	return syncedCount, lastErr
 }
 
@@ -508,7 +501,7 @@ func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, in
 	worktreesDir := filepath.Join(gitRoot, ".grove-worktrees")
 	entries, err := os.ReadDir(worktreesDir)
 	if err != nil {
-		return // No worktrees directory, nothing to do
+		return
 	}
 
 	for _, entry := range entries {
@@ -517,10 +510,10 @@ func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, in
 		}
 		wtPath := filepath.Join(worktreesDir, entry.Name())
 
-		for skillName, r := range resolved {
+		for _, r := range resolved {
 			for _, provider := range r.Providers {
 				destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
-				destPath := filepath.Join(destBaseDir, skillName)
+				destPath := filepath.Join(destBaseDir, r.RelPath)
 
 				if err := os.MkdirAll(destBaseDir, 0755); err != nil {
 					continue
@@ -529,7 +522,7 @@ func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, in
 				os.RemoveAll(destPath)
 
 				if r.SourceType == SourceTypeBuiltin {
-					files, err := readSkillFromFS(embeddedSkillsFS, skillName)
+					files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
 					if err != nil {
 						continue
 					}
@@ -542,7 +535,7 @@ func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, in
 						os.WriteFile(filePath, content, 0644)
 					}
 				} else {
-					fs.CopyDir(r.PhysicalPath, destPath)
+					corefs.CopyDir(r.PhysicalPath, destPath)
 				}
 			}
 		}
@@ -554,27 +547,51 @@ func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, in
 }
 
 // pruneSkillsDir removes skills not in the installed map from a directory.
+// Uses recursive WalkDir to find SKILL.md files and compares their relative paths.
 func pruneSkillsDir(root string, installedPerProvider map[string]map[string]bool, logger *logging.PrettyLogger) {
-	for provider, validSkills := range installedPerProvider {
+	for provider, validRels := range installedPerProvider {
 		destBaseDir := GetSkillsDirectoryForWorktree(root, provider)
-		entries, err := os.ReadDir(destBaseDir)
-		if err != nil {
-			continue
-		}
 
-		for _, entry := range entries {
-			if entry.IsDir() && !validSkills[entry.Name()] {
-				pathToRemove := filepath.Join(destBaseDir, entry.Name())
-				if err := os.RemoveAll(pathToRemove); err != nil {
-					if logger != nil {
-						logger.WarnPretty(fmt.Sprintf("Failed to prune skill '%s': %v", entry.Name(), err))
-					}
-				} else {
-					if logger != nil {
-						logger.InfoPretty(fmt.Sprintf("Pruned unconfigured skill: %s (provider: %s)", entry.Name(), provider))
-					}
-				}
+		var toRemove []string
+		filepath.WalkDir(destBaseDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+				return nil
+			}
+			skillPath := filepath.Dir(path)
+			rel, _ := filepath.Rel(destBaseDir, skillPath)
+
+			if !validRels[rel] {
+				toRemove = append(toRemove, skillPath)
+			}
+			return nil
+		})
+
+		for _, path := range toRemove {
+			os.RemoveAll(path)
+			if logger != nil {
+				logger.InfoPretty(fmt.Sprintf("Pruned unconfigured skill at: %s", path))
 			}
 		}
+
+		// Clean up empty organizational directories left behind after pruning
+		cleanEmptyDirs(destBaseDir)
+	}
+}
+
+// cleanEmptyDirs recursively removes empty directories bottom-up
+func cleanEmptyDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			cleanEmptyDirs(filepath.Join(dir, entry.Name()))
+		}
+	}
+	// After cleaning children, if this dir is now empty, remove it
+	entries, _ = os.ReadDir(dir)
+	if len(entries) == 0 {
+		os.Remove(dir)
 	}
 }
