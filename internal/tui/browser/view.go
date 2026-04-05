@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	markdown "github.com/grovetools/core/tui/components/markdown"
 	"github.com/grovetools/core/tui/theme"
 	"github.com/grovetools/skills/pkg/skills"
 )
@@ -420,7 +421,7 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 		sb.WriteString(sectionStyle.Render("Preview"))
 		sb.WriteString("\n")
 		// Render content with wrapping applied to the whole block
-		sb.WriteString(m.theme.Muted.Width(contentWidth).Render(m.cachedContent))
+		sb.WriteString(markdown.Render(m.cachedContent, m.theme))
 		sb.WriteString("\n")
 	}
 
