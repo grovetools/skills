@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/grovetools/core/pkg/workspace"
-	"github.com/grovetools/skills/internal/tui/browser"
+	"github.com/grovetools/skills/tui/browser"
 	"github.com/spf13/cobra"
 )
 
