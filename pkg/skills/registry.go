@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/skills/pkg/service"
@@ -48,11 +49,14 @@ func LoadAuthorizedSkill(workDir, skillName string) (*LoadedSkill, error) {
 
 		authorized := false
 		if cfg != nil {
-			for _, u := range cfg.Use {
-				if u == skillName {
-					authorized = true
-					break
-				}
+			// Expand [skills] use with skills owned by authorized
+			// playbooks ([playbooks] use). A playbook-owned skill is
+			// implicitly authorized without requiring a redundant
+			// entry in [skills] use. This mirrors the sync-path
+			// behavior in ResolveConfiguredSkills.
+			useWithPlaybooks := ExpandUseWithPlaybookSkills(node, cfg.Use)
+			if slices.Contains(useWithPlaybooks, skillName) {
+				authorized = true
 			}
 			if !authorized {
 				if _, exists := cfg.Dependencies[skillName]; exists {
@@ -127,9 +131,10 @@ func isTransitivelyAuthorized(svc *service.Service, node *workspace.WorkspaceNod
 		return false
 	}
 
-	// Collect all directly authorized skill names
+	// Collect all directly authorized skill names, including skills
+	// owned by authorized playbooks (see ExpandUseWithPlaybookSkills).
 	var authorizedNames []string
-	authorizedNames = append(authorizedNames, cfg.Use...)
+	authorizedNames = append(authorizedNames, ExpandUseWithPlaybookSkills(node, cfg.Use)...)
 	for name := range cfg.Dependencies {
 		authorizedNames = append(authorizedNames, name)
 	}
