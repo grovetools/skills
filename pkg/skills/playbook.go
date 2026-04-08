@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/grovetools/core/config"
+	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/core/util/pathutil"
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
@@ -93,18 +96,125 @@ func ResetPlaybookSearchPaths() {
 	})
 }
 
-// playbookSearchDirs returns the 4-tier search path list: explicitly
-// registered (project/ecosystem) directories first, then the user-scoped
-// global playbooks directory.
-func playbookSearchDirs() []string {
+// GetPlaybookSearchDirs returns the directories that ResolvePlaybookPath
+// should consult for a given working directory, in strict 4-tier
+// precedence order:
+//
+//  1. Project — the notebook workspace playbooks/ directory for the
+//     project that contains workDir (e.g.
+//     ~/notebooks/<nb>/workspaces/<project>/playbooks/).
+//  2. Ecosystem — the playbooks/ directory for the root ecosystem that
+//     contains the project (e.g.
+//     ~/notebooks/<nb>/workspaces/<ecosystem>/playbooks/).
+//  3. User — the global user-scoped playbooks directory
+//     (~/.config/grove/playbooks, or $XDG_CONFIG_HOME/grove/playbooks).
+//  4. Builtin — no builtin playbooks ship today; reserved for future use.
+//
+// Any directories that tests register via RegisterPlaybookSearchPath are
+// appended after the tiered locations so test fixtures continue to work.
+// Duplicates are removed while preserving precedence order. An empty
+// workDir skips tiers 1 and 2 and returns only the user and
+// globally-registered directories.
+//
+// This mirrors the skill resolver's 4-tier discovery
+// (skills/pkg/skills/discovery.go) and uses the same NotebookLocator
+// helper (core/pkg/workspace/notebook_locator.go) to compute playbook
+// paths so the two resolvers stay in lockstep.
+func GetPlaybookSearchDirs(workDir string) []string {
+	var dirs []string
+
+	// Tiers 1 & 2: project and ecosystem notebook playbooks dirs.
+	if workDir != "" {
+		if node, _ := workspace.GetProjectByPath(workDir); node != nil {
+			if svc, err := NewServiceForNode(node); err == nil && svc != nil && svc.NotebookLocator != nil {
+				// Tier 1 — project
+				if pbDir, err := svc.NotebookLocator.GetPlaybooksDir(node); err == nil && pbDir != "" {
+					dirs = append(dirs, pbDir)
+				}
+				// Tier 2 — ecosystem (if the project is inside one)
+				if node.RootEcosystemPath != "" && node.RootEcosystemPath != node.Path {
+					ecoNode := &workspace.WorkspaceNode{
+						Name:         filepath.Base(node.RootEcosystemPath),
+						Path:         node.RootEcosystemPath,
+						NotebookName: node.NotebookName,
+					}
+					if ecoDir, err := svc.NotebookLocator.GetPlaybooksDir(ecoNode); err == nil && ecoDir != "" {
+						dirs = append(dirs, ecoDir)
+					}
+				}
+			}
+		}
+	}
+
+	// Tier 2b — all notebook workspaces known to the user's config.
+	// This ensures `flow playbook show <name>` works even when the
+	// current directory isn't inside a grove-managed project: a
+	// playbook that lives in any configured notebook workspace's
+	// playbooks/ directory is discoverable. Mirrors
+	// sync.go's addNotebookSkillSources for skill discovery.
+	dirs = append(dirs, notebookWorkspacePlaybookDirs()...)
+
+	// Tier 3 — user.
+	if userDir := userPlaybooksDir(); userDir != "" {
+		dirs = append(dirs, userDir)
+	}
+
+	// Tier 4 — builtin (none today).
+
+	// Append globally-registered search paths (tests, ad-hoc callers).
 	playbookSearchM.RLock()
 	extra := append([]string(nil), playbookSearch...)
 	playbookSearchM.RUnlock()
+	dirs = append(dirs, extra...)
 
-	if userDir := userPlaybooksDir(); userDir != "" {
-		extra = append(extra, userDir)
+	// De-duplicate while preserving precedence order.
+	seen := make(map[string]bool, len(dirs))
+	unique := dirs[:0]
+	for _, dir := range dirs {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		unique = append(unique, dir)
 	}
-	return extra
+	return unique
+}
+
+// notebookWorkspacePlaybookDirs returns a `playbooks/` directory for
+// every workspace under every notebook defined in the user's grove
+// config. This is the "global" fallback discovery path used when the
+// CLI is invoked without a grove-managed workspace context, so e.g.
+// `flow playbook show gdv2` can find a playbook that lives inside
+// ~/notebooks/grovetools/workspaces/grovetools/playbooks/gdv2/ without
+// requiring any sync to have run first. Mirrors the skill discovery
+// logic in sync.go's addNotebookSkillSources.
+func notebookWorkspacePlaybookDirs() []string {
+	cfg, err := config.LoadDefault()
+	if err != nil || cfg == nil || cfg.Notebooks == nil {
+		return nil
+	}
+	var dirs []string
+	for _, nb := range cfg.Notebooks.Definitions {
+		if nb == nil || nb.RootDir == "" {
+			continue
+		}
+		rootDir, err := pathutil.Expand(nb.RootDir)
+		if err != nil {
+			continue
+		}
+		workspacesDir := filepath.Join(rootDir, "workspaces")
+		entries, err := os.ReadDir(workspacesDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dirs = append(dirs, filepath.Join(workspacesDir, entry.Name(), "playbooks"))
+		}
+	}
+	return dirs
 }
 
 // userPlaybooksDir returns the global user-scoped playbooks directory,
@@ -121,13 +231,17 @@ func userPlaybooksDir() string {
 }
 
 // ResolvePlaybookPath returns the absolute path of the named playbook,
-// consulting the registered search paths in precedence order and returning
-// the first directory that contains a `playbook.toml` manifest.
-func ResolvePlaybookPath(name string) (string, error) {
+// consulting the 4-tier search paths (project, ecosystem, user, builtin)
+// plus any globally-registered directories for the given workDir and
+// returning the first directory that contains a `playbook.toml` manifest.
+// An empty workDir restricts the search to tiers 3 & 4 plus
+// globally-registered dirs, which is the correct fallback when no
+// workspace context is available.
+func ResolvePlaybookPath(workDir, name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("playbook name is required")
 	}
-	for _, dir := range playbookSearchDirs() {
+	for _, dir := range GetPlaybookSearchDirs(workDir) {
 		candidate := filepath.Join(dir, name)
 		if _, err := os.Stat(filepath.Join(candidate, "playbook.toml")); err == nil {
 			abs, err := filepath.Abs(candidate)
@@ -140,11 +254,12 @@ func ResolvePlaybookPath(name string) (string, error) {
 	return "", fmt.Errorf("playbook %q not found in any registered search path", name)
 }
 
-// LoadPlaybook resolves the named playbook via the 4-tier precedence search
-// and parses its manifest, skills, prompts, and recipes into a Playbook
-// struct. Results are cached per absolute path for the process lifetime.
-func LoadPlaybook(name string) (*Playbook, error) {
-	path, err := ResolvePlaybookPath(name)
+// LoadPlaybook resolves the named playbook via the 4-tier precedence
+// search rooted at workDir and parses its manifest, skills, prompts, and
+// recipes into a Playbook struct. Results are cached per absolute path
+// for the process lifetime.
+func LoadPlaybook(workDir, name string) (*Playbook, error) {
+	path, err := ResolvePlaybookPath(workDir, name)
 	if err != nil {
 		return nil, err
 	}

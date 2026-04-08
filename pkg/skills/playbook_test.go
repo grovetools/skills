@@ -103,11 +103,68 @@ version = "0.0.1"
 
 	RegisterPlaybookSearchPath(root)
 
-	pb, err := LoadPlaybook("tiny")
+	pb, err := LoadPlaybook("", "tiny")
 	if err != nil {
 		t.Fatalf("LoadPlaybook: %v", err)
 	}
 	if pb.Manifest.Name != "tiny" {
 		t.Errorf("got %q want %q", pb.Manifest.Name, "tiny")
+	}
+}
+
+// TestGetPlaybookSearchDirs_IncludesUserDir verifies that the tier-3
+// user playbooks directory is always included in the search path even
+// when no workspace context is available. This is the 4-tier fallback
+// that ResolvePlaybookPath depends on for CLI use outside a project.
+func TestGetPlaybookSearchDirs_IncludesUserDir(t *testing.T) {
+	ResetPlaybookSearchPaths()
+	defer ResetPlaybookSearchPaths()
+
+	dirs := GetPlaybookSearchDirs("")
+	want := userPlaybooksDir()
+	found := false
+	for _, d := range dirs {
+		if d == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("GetPlaybookSearchDirs(\"\") missing user dir %q, got %v", want, dirs)
+	}
+}
+
+// TestLoadPlaybook_FromRegisteredWorkDir verifies that LoadPlaybook can
+// resolve a playbook via a globally-registered search path when an
+// empty workDir is passed. This exercises the "tests and ad-hoc
+// callers" append path in GetPlaybookSearchDirs while still preserving
+// the new workDir-first signature.
+func TestLoadPlaybook_FromRegisteredWorkDir(t *testing.T) {
+	ResetPlaybookSearchPaths()
+	defer ResetPlaybookSearchPaths()
+
+	root := t.TempDir()
+	pbDir := filepath.Join(root, "gdv2-fixture")
+	if err := os.MkdirAll(filepath.Join(pbDir, "skills"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `name = "gdv2-fixture"
+description = "Fixture playbook for resolver tests"
+version = "1.0.0"
+`
+	if err := os.WriteFile(filepath.Join(pbDir, "playbook.toml"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	RegisterPlaybookSearchPath(root)
+
+	pb, err := LoadPlaybook("", "gdv2-fixture")
+	if err != nil {
+		t.Fatalf("LoadPlaybook: %v", err)
+	}
+	if pb.Manifest.Name != "gdv2-fixture" {
+		t.Errorf("manifest name: got %q want %q", pb.Manifest.Name, "gdv2-fixture")
+	}
+	if pb.Manifest.Version != "1.0.0" {
+		t.Errorf("manifest version: got %q want %q", pb.Manifest.Version, "1.0.0")
 	}
 }
