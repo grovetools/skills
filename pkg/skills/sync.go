@@ -228,35 +228,49 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 }
 
 // addPlaybookSkillSources discovers skills shipped inside playbook bundles
-// located in the node's playbooks directory and registers them as standard
-// skill sources. Each playbook directory is expected to contain a
-// `playbook.toml` manifest and a `skills/` subdirectory.
+// and registers them as standard skill sources. It walks the full 4-tier
+// playbook search path (project > ecosystem > user > builtin) so sync
+// honors the same precedence LoadPlaybook uses. Higher-precedence tiers
+// overwrite lower ones in the sources map unconditionally.
 func addPlaybookSkillSources(svc *service.Service, node *workspace.WorkspaceNode, sources map[string]SkillSource) {
-	if svc == nil || svc.NotebookLocator == nil || node == nil {
+	if node == nil {
 		return
 	}
-	playbooksDir, err := svc.NotebookLocator.GetPlaybooksDir(node)
-	if err != nil || playbooksDir == "" {
-		return
-	}
-	entries, err := os.ReadDir(playbooksDir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pbRoot := filepath.Join(playbooksDir, entry.Name())
-		if _, err := os.Stat(filepath.Join(pbRoot, "playbook.toml")); err != nil {
-			continue
-		}
-		pbSkills := filepath.Join(pbRoot, "skills")
-		addSkillSources(pbSkills, SourceTypeProject, sources)
 
-		// Register the playbook's parent directory as a search path so
-		// LoadPlaybook can resolve this playbook by name.
-		RegisterPlaybookSearchPath(playbooksDir)
+	// GetPlaybookSearchDirs returns dirs in precedence order
+	// (project first). Walk in reverse so later overwrites win.
+	dirs := GetPlaybookSearchDirs(node.Path)
+	for i := len(dirs) - 1; i >= 0; i-- {
+		playbooksDir := dirs[i]
+		entries, err := os.ReadDir(playbooksDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			pbRoot := filepath.Join(playbooksDir, entry.Name())
+			if _, err := os.Stat(filepath.Join(pbRoot, "playbook.toml")); err != nil {
+				continue
+			}
+			pbSkills := filepath.Join(pbRoot, "skills")
+
+			// Collect skills from this tier into a temporary map
+			// and forcibly overwrite the main sources map, rather
+			// than using addSkillSourceSafely (which picks shallowest
+			// path and keeps the first-seen entry when types match).
+			tierSources := make(map[string]SkillSource)
+			addSkillSources(pbSkills, SourceTypeProject, tierSources)
+			for name, src := range tierSources {
+				sources[name] = src
+			}
+
+			// Register the playbook's parent directory as a search
+			// path so LoadPlaybook can resolve this playbook by name
+			// from other call sites.
+			RegisterPlaybookSearchPath(playbooksDir)
+		}
 	}
 }
 

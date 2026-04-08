@@ -25,6 +25,8 @@ func main() {
 		RegistryScenario(),
 		// Playbook Scenarios
 		PlaybookDiscoveryScenario(),
+		PlaybookNestedSkillsScenario(),
+		PlaybookPrecedenceScenario(),
 		// Daemon Scenarios
 		GrovedSkillSyncScenario(),
 		// Nested Skills
