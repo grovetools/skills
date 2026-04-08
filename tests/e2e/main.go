@@ -23,6 +23,8 @@ func main() {
 		SkillsIntegrateScenario(),
 		// Registry model
 		RegistryScenario(),
+		// Playbook Scenarios
+		PlaybookDiscoveryScenario(),
 		// Daemon Scenarios
 		GrovedSkillSyncScenario(),
 		// Nested Skills
