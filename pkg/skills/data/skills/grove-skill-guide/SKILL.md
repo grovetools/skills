@@ -324,3 +324,15 @@ skills tree {skill-name}
 # Install to validate structure
 skills install {skill-name} --scope user
 ```
+
+## Instruction Primitives: Templates vs. Skills vs. Playbooks
+
+Grove offers three related primitives for shaping agent behavior. Pick the right one for the job:
+
+- **Templates (`template:`)** — static markdown strings that are passed to LLM APIs as-is. Used for generic prompt shaping (e.g. `template: chat`, `template: code-review`). Templates have **no execution protocol and no observability**: the LLM reads the prompt and responds, nothing else. Templates are the right tool for one-off oneshot jobs where you just need a framed prompt.
+
+- **Skills (`skill:`, `skill_sequence:`)** — executable agent choreographies. A skill is a SKILL.md file with frontmatter that declares which artifacts it `produces`, which sub-skills it nests, and which tools it needs. Skills integrate with the `flow artifact` CLI for closed-loop verification (the agent writes the declared artifacts, then runs `flow artifact complete` to confirm the step landed). Skills are the right tool for anything that should be **reproducible, nested, or observable**.
+
+- **Playbooks (`playbook:`)** — versioned bundles that group Skills, Prompts, and Recipes together to define a complete methodology (e.g. `gdv2`). Playbooks are the right tool when several skills + prompts + recipes need to **version together** and ship as one unit. Individual skills continue to live under `.claude/skills/`; a playbook simply curates and versions a subset of them into a named package.
+
+**Rule of thumb:** if you need artifact tracking or nested steps, use a **skill**. If you just need a framed prompt, use a **template**. If you need to ship a versioned bundle of several skills + prompts, wrap them in a **playbook**.
