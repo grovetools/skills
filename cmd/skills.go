@@ -98,13 +98,18 @@ Skills from other workspaces can be referenced as "workspace:skill-name" in grov
 			// Load skills configuration to check which skills are configured
 			skillsCfg, _ := skills.LoadSkillsConfig(svc.Config, node)
 			configuredMap := make(map[string]bool)
+			var baseUse []string
 			if skillsCfg != nil {
-				for _, u := range skillsCfg.Use {
-					configuredMap[u] = true
-				}
+				baseUse = skillsCfg.Use
 				for name := range skillsCfg.Dependencies {
 					configuredMap[name] = true
 				}
+			}
+			// Always expand with playbook-authorized skills, even when
+			// [skills] is absent — a grove.toml with only [playbooks]
+			// should still mark its playbook skills as configured.
+			for _, u := range skills.ExpandUseWithPlaybookSkills(node, baseUse) {
+				configuredMap[u] = true
 			}
 
 			// Sort skill names for consistent output

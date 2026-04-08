@@ -50,7 +50,18 @@ Exit codes:
 				return fmt.Errorf("failed to load [skills] config: %w", err)
 			}
 
-			if skillsCfg == nil || len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0 {
+			// Synthesize an empty config so playbook-authorized skills
+			// still get resolved when [skills] is absent.
+			if skillsCfg == nil {
+				skillsCfg = &skills.SkillsConfig{}
+			}
+
+			hasPlaybookSkills := false
+			if pbCfg, _ := skills.LoadPlaybooksFromPath(node.Path); pbCfg != nil && len(pbCfg.Use) > 0 {
+				hasPlaybookSkills = true
+			}
+
+			if len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0 && !hasPlaybookSkills {
 				fmt.Println("No skills declared in grove.toml")
 				return nil
 			}

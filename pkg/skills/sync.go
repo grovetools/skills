@@ -394,12 +394,26 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		return result, fmt.Errorf("failed to load skills config: %w", err)
 	}
 
+	// Synthesize a skills config if none exists so playbook-authorized
+	// skills still get resolved. A grove.toml with only [playbooks] must
+	// still sync those playbook-owned skills.
+	if skillsCfg == nil {
+		skillsCfg = &SkillsConfig{}
+	}
+
 	providers := []string{"claude"}
-	if skillsCfg != nil && len(skillsCfg.Providers) > 0 {
+	if len(skillsCfg.Providers) > 0 {
 		providers = skillsCfg.Providers
 	}
 
-	if skillsCfg == nil || (len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0) {
+	hasPlaybookSkills := false
+	if node != nil {
+		if pbCfg, _ := LoadPlaybooksFromPath(node.Path); pbCfg != nil && len(pbCfg.Use) > 0 {
+			hasPlaybookSkills = true
+		}
+	}
+
+	if len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0 && !hasPlaybookSkills {
 		if opts.Prune && !opts.DryRun {
 			for _, provider := range providers {
 				destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)

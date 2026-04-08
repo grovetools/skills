@@ -28,6 +28,39 @@ type ResolvedSkill struct {
 	Providers []string
 }
 
+// ExpandUseWithPlaybookSkills returns the input skill-use list with any
+// skills owned by authorized playbooks ([playbooks] use in grove.toml)
+// appended. This is how a playbook-owned skill becomes "configured" for
+// the workspace without requiring a redundant [skills] use entry.
+func ExpandUseWithPlaybookSkills(node *workspace.WorkspaceNode, use []string) []string {
+	result := append([]string(nil), use...)
+	if node == nil {
+		return result
+	}
+	pbCfg, err := LoadPlaybooksFromPath(node.Path)
+	if err != nil || pbCfg == nil || len(pbCfg.Use) == 0 {
+		return result
+	}
+	seen := make(map[string]bool, len(result))
+	for _, name := range result {
+		seen[name] = true
+	}
+	for _, pbName := range pbCfg.Use {
+		pb, err := LoadPlaybook(node.Path, pbName)
+		if err != nil || pb == nil {
+			continue
+		}
+		for _, s := range pb.Skills {
+			if s.Name == "" || seen[s.Name] {
+				continue
+			}
+			seen[s.Name] = true
+			result = append(result, s.Name)
+		}
+	}
+	return result
+}
+
 // ResolveConfiguredSkills resolves all skills declared in the configuration.
 // It also recursively traverses SKILL.md dependencies to implicitly resolve
 // nested sub-skills (via skill_sequence and requires).
@@ -41,6 +74,12 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 	if len(defaultProviders) == 0 {
 		defaultProviders = []string{"claude"}
 	}
+
+	// Implicitly authorize skills owned by authorized playbooks. A
+	// playbook listed in [playbooks] use contributes all of its
+	// playbook-owned skills to the resolver's "use" set so they sync
+	// without requiring redundant per-skill entries in [skills] use.
+	useWithPlaybooks := ExpandUseWithPlaybookSkills(node, cfg.Use)
 
 	resolved := make(map[string]ResolvedSkill)
 	inProgress := make(map[string]bool)
@@ -151,7 +190,7 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 		return nil
 	}
 
-	for _, skillName := range cfg.Use {
+	for _, skillName := range useWithPlaybooks {
 		if err := resolveTransitive(skillName, defaultProviders, ""); err != nil {
 			return nil, err
 		}
