@@ -219,7 +219,45 @@ func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[s
 		}
 	}
 
+	// Playbook-owned skills: walk playbooks/<name>/skills for each playbook
+	// bundle in the workspace's playbooks directory. These skills sync
+	// identically to standalone skills.
+	addPlaybookSkillSources(svc, node, sources)
+
 	return sources
+}
+
+// addPlaybookSkillSources discovers skills shipped inside playbook bundles
+// located in the node's playbooks directory and registers them as standard
+// skill sources. Each playbook directory is expected to contain a
+// `playbook.toml` manifest and a `skills/` subdirectory.
+func addPlaybookSkillSources(svc *service.Service, node *workspace.WorkspaceNode, sources map[string]SkillSource) {
+	if svc == nil || svc.NotebookLocator == nil || node == nil {
+		return
+	}
+	playbooksDir, err := svc.NotebookLocator.GetPlaybooksDir(node)
+	if err != nil || playbooksDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(playbooksDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pbRoot := filepath.Join(playbooksDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(pbRoot, "playbook.toml")); err != nil {
+			continue
+		}
+		pbSkills := filepath.Join(pbRoot, "skills")
+		addSkillSources(pbSkills, SourceTypeProject, sources)
+
+		// Register the playbook's parent directory as a search path so
+		// LoadPlaybook can resolve this playbook by name.
+		RegisterPlaybookSearchPath(playbooksDir)
+	}
 }
 
 // addNotebookSkillSources scans all configured notebook definitions for skill directories.
