@@ -3,8 +3,9 @@
 package view
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/grovetools/core/config"
 	"github.com/grovetools/core/pkg/workspace"
@@ -19,11 +20,16 @@ type Model struct {
 	pager pager.Model
 }
 
-// New constructs a Model wrapping a fresh browser.
+// New constructs a Model wrapping a fresh browser. Zero-config pager:
+// the inner skills browser already renders its own Padding(1, 2), so
+// we let it own layout and just stack the tab bar on top via the
+// pager's default View() path.
 func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode) Model {
 	b := browser.New(svc, cfg, node)
 	page := &browserPage{inner: b}
-	return Model{pager: pager.New([]pager.Page{page}, pager.DefaultKeyMap())}
+	return Model{pager: pager.NewWith([]pager.Page{page}, pager.DefaultKeyMap(), pager.Config{
+		OuterPadding: [4]int{0, 0, 0, 0},
+	})}
 }
 
 func (m Model) Init() tea.Cmd { return m.pager.Init() }
@@ -34,16 +40,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// View renders bar + browser body. The browser already adds its own
-// Padding(1, 2), so we left-pad the bar to align and skip outer
-// padding to avoid stacking blank rows.
+// View delegates entirely to the pager. The browserPage adapter
+// strips the browser's leading newline so the pager's blank-row
+// separator (bar → blank → body) isn't doubled up.
 func (m Model) View() string {
-	bar := lipgloss.NewStyle().PaddingLeft(2).Render(m.pager.RenderTabBar())
-	body := ""
-	if active := m.pager.Active(); active != nil {
-		body = active.View()
-	}
-	return "\n" + bar + body
+	return m.pager.View()
 }
 
 func (m Model) Close() error { return nil }
@@ -57,7 +58,12 @@ type browserPage struct {
 
 func (p *browserPage) Name() string  { return "Browser" }
 func (p *browserPage) Init() tea.Cmd { return p.inner.Init() }
-func (p *browserPage) View() string  { return p.inner.View() }
+func (p *browserPage) View() string {
+	// Inner browser prefixes its own layout with a leading "\n"; the
+	// pager already inserts a blank row between bar and body, so
+	// strip the leading newline here to avoid double-spacing.
+	return strings.TrimPrefix(p.inner.View(), "\n")
+}
 
 func (p *browserPage) Update(msg tea.Msg) (pager.Page, tea.Cmd) {
 	updated, cmd := p.inner.Update(msg)
