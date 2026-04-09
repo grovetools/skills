@@ -1,12 +1,5 @@
-// Package view is the tabbed meta-panel wrapper for the skills TUI.
-// It hosts skills/tui/browser as its sole tab today — future
-// expansion (skill dependency graph, hot-reload status, cached
-// rulepacks inspector, usage telemetry) becomes a one-line page
-// append instead of a follow-on refactor.
-//
-// The meta-panel uses the shared core/tui/components/pager component
-// so key handling (Tab1..Tab9, NextTab/PrevTab) and auto-switch
-// (embed.SwitchTabMsg) stay consistent with cx, memory, nb, and flow.
+// Package view is a tabbed meta-panel wrapping skills/tui/browser.
+// Single tab today; designed to grow.
 package view
 
 import (
@@ -21,45 +14,29 @@ import (
 	"github.com/grovetools/skills/tui/browser"
 )
 
-// Model is the skills view meta-panel. It wraps a browser.Model in a
-// pager.Page and exposes the standard tea.Model interface.
+// Model is the skills meta-panel.
 type Model struct {
 	pager pager.Model
 }
 
-// New constructs a view.Model around a freshly-built browser. The
-// constructor signature mirrors browser.New so hosts can swap the
-// package import without rewriting call sites.
+// New constructs a Model wrapping a fresh browser.
 func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode) Model {
 	b := browser.New(svc, cfg, node)
 	page := &browserPage{inner: b}
-	p := pager.New([]pager.Page{page}, pager.DefaultKeyMap())
-	return Model{pager: p}
+	return Model{pager: pager.New([]pager.Page{page}, pager.DefaultKeyMap())}
 }
 
-// Init forwards to the pager's active page.
 func (m Model) Init() tea.Cmd { return m.pager.Init() }
 
-// Update routes messages through the pager so tab navigation,
-// window resizing, and auto-switch all work the same way they do
-// for the other meta-panels.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.pager, cmd = m.pager.Update(msg)
 	return m, cmd
 }
 
-// View renders the tab bar directly above the active page. The
-// wrapped skills browser already applies its own Padding(1, 2)
-// around its two-pane layout, so we must NOT wrap the pager output
-// in another Padding here — that would double the top margin and
-// stack pager.View()'s blank-row separator on top of the browser's
-// built-in top pad.
-//
-// Instead we render the tab bar with PaddingLeft(2) to align with
-// the browser's content column and prepend one blank row for the
-// top margin. The browser's own Padding(1, 2) provides the single
-// blank row of separation between the bar and its header.
+// View renders bar + browser body. The browser already adds its own
+// Padding(1, 2), so we left-pad the bar to align and skip outer
+// padding to avoid stacking blank rows.
 func (m Model) View() string {
 	bar := lipgloss.NewStyle().PaddingLeft(2).Render(m.pager.RenderTabBar())
 	body := ""
@@ -69,22 +46,18 @@ func (m Model) View() string {
 	return "\n" + bar + body
 }
 
-// Close is a no-op for symmetry with the other meta-panel Close
-// methods. Skills browser owns no async resources.
 func (m Model) Close() error { return nil }
 
-// browserPage adapts skills/tui/browser.Model to the pager.Page
-// interface, translating SetSize into a WindowSizeMsg and Focus/Blur
-// into embed contract messages.
+// browserPage adapts skills browser.Model to pager.Page.
 type browserPage struct {
 	inner  browser.Model
 	width  int
 	height int
 }
 
-func (p *browserPage) Name() string { return "Browser" }
-
+func (p *browserPage) Name() string  { return "Browser" }
 func (p *browserPage) Init() tea.Cmd { return p.inner.Init() }
+func (p *browserPage) View() string  { return p.inner.View() }
 
 func (p *browserPage) Update(msg tea.Msg) (pager.Page, tea.Cmd) {
 	updated, cmd := p.inner.Update(msg)
@@ -93,8 +66,6 @@ func (p *browserPage) Update(msg tea.Msg) (pager.Page, tea.Cmd) {
 	}
 	return p, cmd
 }
-
-func (p *browserPage) View() string { return p.inner.View() }
 
 func (p *browserPage) Focus() tea.Cmd {
 	updated, cmd := p.inner.Update(embed.FocusMsg{})
