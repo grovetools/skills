@@ -23,8 +23,8 @@ func (m Model) View() string {
 		return m.renderLoading()
 	}
 
-	// Main two-pane layout with padding
-	return lipgloss.NewStyle().Padding(1, 2).Render(m.renderMainView())
+	// Main two-pane layout (padding handled by pager wrapper)
+	return m.renderMainView()
 }
 
 // renderLoading renders the loading state.
@@ -38,9 +38,9 @@ func (m Model) renderLoading() string {
 
 // renderMainView renders the main two-pane layout.
 func (m Model) renderMainView() string {
-	// Account for padding (4 horizontal = 2 left + 2 right, 2 vertical = 1 top + 1 bottom)
-	effectiveWidth := m.width - 4
-	effectiveHeight := m.height - 2
+	// Padding handled by pager wrapper
+	effectiveWidth := m.width
+	effectiveHeight := m.height
 
 	// Calculate pane widths dynamically based on content
 	leftWidth := m.getLeftPaneWidth()

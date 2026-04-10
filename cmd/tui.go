@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/grovetools/core/pkg/workspace"
-	"github.com/grovetools/skills/tui/browser"
+	skillsview "github.com/grovetools/skills/tui/view"
 	"github.com/spf13/cobra"
 )
 
@@ -45,7 +45,7 @@ Actions:
 			}
 			node, _ := workspace.GetProjectByPath(cwd) // Ignore error, node will be nil if not in workspace
 
-			model := browser.New(svc, svc.Config, node)
+			model := skillsview.New(svc, svc.Config, node)
 			p := tea.NewProgram(model, tea.WithAltScreen())
 
 			_, err = p.Run()

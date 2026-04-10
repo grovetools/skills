@@ -561,8 +561,8 @@ func toggleUserSkillCmd(tomlPath, skillName, projectName string) tea.Cmd {
 
 // newViewport creates a new viewport for the right pane.
 func newViewport(width, height int) viewport.Model {
-	// Content height = total height - header(2) - footer(2) - padding(2) - border(2)
-	contentHeight := height - 8
+	// Content height = total height - header(2) - footer(2) - border(2)
+	contentHeight := height - 6
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -574,7 +574,7 @@ func newViewport(width, height int) viewport.Model {
 
 // rightPaneWidth returns the width of the right pane.
 func (m *Model) rightPaneWidth() int {
-	effectiveWidth := m.width - 4 // Account for outer padding
+	effectiveWidth := m.width // Padding handled by pager wrapper
 	leftWidth := m.getLeftPaneWidth()
 	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
 	return rightWidth - 6                         // Account for border (2) + padding (2) + safety margin (2)
@@ -582,10 +582,8 @@ func (m *Model) rightPaneWidth() int {
 
 // viewportHeight returns the height available for the viewport.
 func (m *Model) viewportHeight() int {
-	// effectiveHeight = m.height - 2 (outer padding)
-	// contentHeight = effectiveHeight - 4 (header + footer) = m.height - 6
-	// viewport height = contentHeight - 2 (border top + bottom) = m.height - 8
-	contentHeight := m.height - 8
+	// contentHeight = m.height - 4 (header + footer) - 2 (border top + bottom)
+	contentHeight := m.height - 6
 	if contentHeight < 1 {
 		contentHeight = 1
 	}

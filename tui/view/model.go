@@ -21,15 +21,12 @@ type Model struct {
 	pager pager.Model
 }
 
-// New constructs a Model wrapping a fresh browser. Zero-config pager:
-// the inner skills browser already renders its own Padding(1, 2), so
-// we let it own layout and just stack the tab bar on top via the
-// pager's default View() path.
+// New constructs a Model wrapping a fresh browser.
 func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode) Model {
 	b := browser.New(svc, cfg, node)
 	page := &browserPage{inner: b}
 	return Model{pager: pager.NewWith([]pager.Page{page}, pager.KeyMapFromBase(keymap.NewBase()), pager.Config{
-		OuterPadding: [4]int{0, 0, 0, 0},
+		OuterPadding: [4]int{1, 2, 0, 2},
 	})}
 }
 
