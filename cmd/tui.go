@@ -5,6 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/grovetools/compositor"
 	"github.com/grovetools/core/pkg/workspace"
 	skillsview "github.com/grovetools/skills/tui/view"
 	"github.com/spf13/cobra"
@@ -46,9 +47,17 @@ Actions:
 			node, _ := workspace.GetProjectByPath(cwd) // Ignore error, node will be nil if not in workspace
 
 			model := skillsview.New(svc, svc.Config, node)
-			p := tea.NewProgram(model, tea.WithAltScreen())
+			compModel := compositor.NewModel(model)
+			p := tea.NewProgram(compModel, tea.WithAltScreen())
 
-			_, err = p.Run()
+			finalModel, err := p.Run()
+
+			// Free compositor resources and unwrap the inner model.
+			if cm, ok := finalModel.(*compositor.Model); ok {
+				cm.Free()
+				_ = cm.Unwrap()
+			}
+
 			return err
 		},
 	}
