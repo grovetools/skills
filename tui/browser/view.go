@@ -37,6 +37,8 @@ func (m Model) renderLoading() string {
 }
 
 // renderMainView renders the main two-pane layout.
+// The footer is rendered separately via FooterView() and pinned by the
+// pager wrapper, so the browser only renders header + body here.
 func (m Model) renderMainView() string {
 	// Padding handled by pager wrapper
 	effectiveWidth := m.width
@@ -46,10 +48,10 @@ func (m Model) renderMainView() string {
 	leftWidth := m.getLeftPaneWidth()
 	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
 
-	// Calculate content height (total height minus header and footer)
+	// Calculate content height (total height minus header only).
+	// Footer is handled by the pager's SetFooter mechanism.
 	// Header: 2 lines (title + separator)
-	// Footer: 2 lines (separator + status)
-	contentHeight := effectiveHeight - 4
+	contentHeight := effectiveHeight - 2
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -58,7 +60,6 @@ func (m Model) renderMainView() string {
 	header := m.renderHeader(effectiveWidth)
 	leftPane := m.renderLeftPane(leftWidth, contentHeight)
 	rightPane := m.renderRightPane(rightWidth, contentHeight)
-	footer := m.renderFooter(effectiveWidth)
 
 	// Join panes horizontally with a divider
 	// Build divider line by line to match the content height
@@ -74,7 +75,6 @@ func (m Model) renderMainView() string {
 	result := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		mainContent,
-		footer,
 	)
 	return strings.TrimSuffix(result, "\n")
 }
@@ -580,9 +580,13 @@ func (m *Model) renderGroupDetails(group *DisplayNode) string {
 	return sb.String()
 }
 
-// renderFooter renders the status bar and help hints.
-func (m Model) renderFooter(width int) string {
-	separator := m.theme.Muted.Render(strings.Repeat("─", width))
+// FooterView returns the footer content for use by the pager's
+// SetFooter mechanism. The pager pins this below the scrollable body.
+func (m Model) FooterView() string {
+	maxWidth := m.width
+	if maxWidth < 1 {
+		maxWidth = 80
+	}
 
 	// Status line
 	var status string
@@ -617,22 +621,16 @@ func (m Model) renderFooter(width int) string {
 		searchLine = "Search: " + m.filterInput.View()
 	}
 
-	// Build footer
-	var footer string
-	if searchLine != "" {
-		footer = lipgloss.JoinVertical(lipgloss.Left,
-			separator,
-			searchLine,
-			status+" │ "+helpText,
-		)
-	} else {
-		footer = lipgloss.JoinVertical(lipgloss.Left,
-			separator,
-			status+" │ "+helpText,
-		)
-	}
+	// Compose the status + help line, constrained to width
+	statusLine := lipgloss.NewStyle().MaxWidth(maxWidth).Render(
+		status + " │ " + helpText,
+	)
 
-	return footer
+	// Build footer
+	if searchLine != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, searchLine, statusLine)
+	}
+	return statusLine
 }
 
 // truncateString truncates a string to a maximum width.
