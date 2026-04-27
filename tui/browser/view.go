@@ -263,7 +263,7 @@ func (m Model) renderRightPane(width int, height int) string {
 	// Apply rounded border with focus-dependent color
 	// Don't set Height - let content determine height, border adds to it
 	style := lipgloss.NewStyle().
-		Width(width - 4). // Account for border (2) and padding (2)
+		Width(width-4). // Account for border (2) and padding (2)
 		Padding(0, 1).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor)
@@ -460,7 +460,7 @@ func (m *Model) renderSkillSequenceTree(sb *strings.Builder, sequence []string, 
 		if subMeta != nil && len(subMeta.Produces) > 0 {
 			for j, art := range subMeta.Produces {
 				artPrefix := "├─"
-				if j == len(subMeta.Produces)-1 && (subMeta.SkillSequence == nil || len(subMeta.SkillSequence) == 0) {
+				if j == len(subMeta.Produces)-1 && len(subMeta.SkillSequence) == 0 {
 					artPrefix = "└─"
 				}
 				sb.WriteString(fmt.Sprintf("%s%s %s %s\n", childIndent,
@@ -499,12 +499,6 @@ func (m *Model) loadSkillMetadata(name string) *skills.SkillMetadata {
 // renderGroupDetails renders the group details for the viewport.
 func (m *Model) renderGroupDetails(group *DisplayNode) string {
 	var sb strings.Builder
-
-	// Get content width for wrapping
-	contentWidth := m.viewport.Width - 2
-	if contentWidth < 20 {
-		contentWidth = 20
-	}
 
 	// Header
 	sb.WriteString(m.theme.Highlight.Render(group.Name))

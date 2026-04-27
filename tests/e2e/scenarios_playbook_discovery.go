@@ -233,7 +233,7 @@ func syncPlaybookSkills(ctx *harness.Context) error {
 
 	for _, skillName := range []string{"test-pb-hello", "test-pb-goodbye"} {
 		skillPath := filepath.Join(ecosystemDir, ".claude", "skills", skillName, "SKILL.md")
-		content, err := os.ReadFile(skillPath)
+		content, err := os.ReadFile(skillPath) //nolint:gosec // G304: test path
 		if err != nil {
 			return fmt.Errorf("expected playbook skill synced to %s: %w", skillPath, err)
 		}

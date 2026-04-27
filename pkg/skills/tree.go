@@ -97,7 +97,7 @@ func buildTreeNode(sb *strings.Builder, svc *service.Service, name string, prefi
 	}
 
 	for i, req := range metadata.Requires {
-		buildTreeNode(sb, svc, req, childPrefix, i == len(metadata.Requires)-1, false, visited, compact)
+		_ = buildTreeNode(sb, svc, req, childPrefix, i == len(metadata.Requires)-1, false, visited, compact)
 	}
 
 	return nil

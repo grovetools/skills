@@ -164,7 +164,7 @@ func applySkillsDefaults(cfg *SkillsConfig) *SkillsConfig {
 // LoadSkillsFromPath reads the [skills] block from grove.toml at the given path.
 func LoadSkillsFromPath(dir string) (*SkillsConfig, error) {
 	tomlPath := filepath.Join(dir, "grove.toml")
-	data, err := os.ReadFile(tomlPath)
+	data, err := os.ReadFile(tomlPath) //nolint:gosec // G304: path constructed from workspace directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

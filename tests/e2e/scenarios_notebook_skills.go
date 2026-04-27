@@ -216,7 +216,7 @@ func declarativeSyncNotebookSkills(ctx *harness.Context) error {
 
 	// Verify explain-with-analogy was synced (should be notebook override)
 	overrideSkillPath := filepath.Join(ecosystemDir, ".claude", "skills", "explain-with-analogy", "SKILL.md")
-	content, err := os.ReadFile(overrideSkillPath)
+	content, err := os.ReadFile(overrideSkillPath) //nolint:gosec // G304: test path
 	if err != nil {
 		return fmt.Errorf("explain-with-analogy was not synced: %w", err)
 	}

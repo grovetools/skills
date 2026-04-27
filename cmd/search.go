@@ -142,11 +142,11 @@ Output modes:
 
 			// Human-readable tabular output
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSOURCE\tMATCH\tEDIT PATH")
+			_, _ = fmt.Fprintln(w, "NAME\tSOURCE\tMATCH\tEDIT PATH")
 			for _, r := range results {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.Source, r.MatchReason, r.FilePath)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.Source, r.MatchReason, r.FilePath)
 			}
-			w.Flush()
+			_ = w.Flush()
 			return nil
 		},
 	}

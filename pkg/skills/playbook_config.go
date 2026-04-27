@@ -40,7 +40,7 @@ func LoadPlaybooksConfig(cfg *coreconfig.Config) *PlaybooksConfig {
 // Returns a non-nil empty config if grove.toml doesn't exist or has no [playbooks] block.
 func LoadPlaybooksFromPath(dir string) (*PlaybooksConfig, error) {
 	tomlPath := filepath.Join(dir, "grove.toml")
-	data, err := os.ReadFile(tomlPath)
+	data, err := os.ReadFile(tomlPath) //nolint:gosec // G304: path from workspace dir
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &PlaybooksConfig{}, nil

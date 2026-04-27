@@ -124,7 +124,7 @@ func listSkillsForWorkspace(svc *service.Service, ws *workspace.WorkspaceNode, s
 	var skills []WorkspaceSkill
 	workspaceName := ws.Name
 
-	filepath.WalkDir(skillsDir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(skillsDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
@@ -139,7 +139,7 @@ func listSkillsForWorkspace(svc *service.Service, ws *workspace.WorkspaceNode, s
 		skillName := filepath.Base(skillPath)
 
 		description := ""
-		if content, err := os.ReadFile(path); err == nil {
+		if content, err := os.ReadFile(path); err == nil { //nolint:gosec // G304: path from WalkDir
 			if meta, err := ParseSkillFrontmatter(content); err == nil {
 				description = meta.Description
 			}

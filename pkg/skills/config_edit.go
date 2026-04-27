@@ -42,11 +42,11 @@ func ToggleUserProjectSkillInConfig(tomlPath, skillName, projectName string) err
 // toggleSkillInSection toggles a skill in a specific TOML section's use array.
 // The sectionHeader should be the full section name including brackets (e.g., "[skills]").
 func toggleSkillInSection(tomlPath, skillName, sectionHeader string) error {
-	if err := os.MkdirAll(filepath.Dir(tomlPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(tomlPath), 0755); err != nil { //nolint:gosec // G301: config dir needs traversal
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	content, err := os.ReadFile(tomlPath)
+	content, err := os.ReadFile(tomlPath) //nolint:gosec // G304: path from user config
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read config: %w", err)
 	}
@@ -59,7 +59,7 @@ func toggleSkillInSection(tomlPath, skillName, sectionHeader string) error {
 			text += "\n"
 		}
 		text += fmt.Sprintf("\n%s\nuse = [\"%s\"]\n", sectionHeader, skillName)
-		return os.WriteFile(tomlPath, []byte(text), 0644)
+		return os.WriteFile(tomlPath, []byte(text), 0644) //nolint:gosec // G306: config file must be readable
 	}
 
 	// Find the section
@@ -93,7 +93,7 @@ func toggleSkillInSection(tomlPath, skillName, sectionHeader string) error {
 		insertion := fmt.Sprintf("\nuse = [\"%s\"]", skillName)
 		endOfHeader := sectionIdx + len(sectionHeader)
 		newText := text[:endOfHeader] + insertion + text[endOfHeader:]
-		return os.WriteFile(tomlPath, []byte(newText), 0644)
+		return os.WriteFile(tomlPath, []byte(newText), 0644) //nolint:gosec // G306: config must be readable
 	}
 
 	// Extract existing skills from the array
@@ -147,5 +147,5 @@ func toggleSkillInSection(tomlPath, skillName, sectionHeader string) error {
 	useMatchEnd := sectionIdx + match[1]
 	newText := text[:useMatchStart] + newArrayLine + text[useMatchEnd:]
 
-	return os.WriteFile(tomlPath, []byte(newText), 0644)
+	return os.WriteFile(tomlPath, []byte(newText), 0644) //nolint:gosec // G306: config file must be readable
 }

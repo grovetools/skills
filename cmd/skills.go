@@ -126,26 +126,26 @@ Skills from other workspaces can be referenced as "workspace:skill-name" in grov
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			if showPath {
-				fmt.Fprintln(w, "SKILL\tCONFIGURED\tSOURCE\tPATH")
+				_, _ = fmt.Fprintln(w, "SKILL\tCONFIGURED\tSOURCE\tPATH")
 				for _, name := range names {
 					src := sources[name]
 					conf := "No"
 					if configuredMap[name] {
 						conf = "Yes"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, conf, src.Type, src.Path)
+					_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, conf, src.Type, src.Path)
 				}
 			} else {
-				fmt.Fprintln(w, "SKILL\tCONFIGURED\tSOURCE")
+				_, _ = fmt.Fprintln(w, "SKILL\tCONFIGURED\tSOURCE")
 				for _, name := range names {
 					conf := "No"
 					if configuredMap[name] {
 						conf = "Yes"
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\n", name, conf, sources[name].Type)
+					_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", name, conf, sources[name].Type)
 				}
 			}
-			w.Flush()
+			_ = w.Flush()
 			return nil
 		},
 	}
@@ -183,7 +183,7 @@ func listSkillsGrouped(svc *service.Service, sources map[string]skills.SkillSour
 	}
 
 	// Sort domain names
-	var domains []string
+	domains := make([]string, 0, len(domainSkills))
 	for d := range domainSkills {
 		domains = append(domains, d)
 	}
@@ -217,17 +217,17 @@ func listSkillsLegacy(svc *service.Service, showPath bool) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SKILL\tSOURCE")
+	_, _ = fmt.Fprintln(w, "SKILL\tSOURCE")
 	for _, name := range allSkills {
-		fmt.Fprintf(w, "%s\t%s\n", name, sources[name])
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", name, sources[name])
 	}
-	w.Flush()
+	_ = w.Flush()
 	return nil
 }
 
 // listWorkspaceSkills lists skills from all workspaces (--ecosystem or --all-workspaces)
 func listWorkspaceSkills(svc *service.Service, node *workspace.WorkspaceNode, allWorkspaces bool, jsonOutput bool, showPath bool) error {
-	var workspaceSkills []skills.WorkspaceSkill
+	var workspaceSkills []skills.WorkspaceSkill //nolint:prealloc // size unknown before branch
 	var err error
 
 	if allWorkspaces {
@@ -293,21 +293,21 @@ func listWorkspaceSkills(svc *service.Service, node *workspace.WorkspaceNode, al
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if showPath {
-		fmt.Fprintln(w, "WORKSPACE\tSKILL\tPATH")
+		_, _ = fmt.Fprintln(w, "WORKSPACE\tSKILL\tPATH")
 		for _, s := range workspaceSkills {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", s.Workspace, s.Name, s.Path)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", s.Workspace, s.Name, s.Path)
 		}
 	} else {
-		fmt.Fprintln(w, "WORKSPACE\tSKILL\tDESCRIPTION")
+		_, _ = fmt.Fprintln(w, "WORKSPACE\tSKILL\tDESCRIPTION")
 		for _, s := range workspaceSkills {
 			desc := s.Description
 			if len(desc) > 60 {
 				desc = desc[:57] + "..."
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", s.Workspace, s.Name, desc)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", s.Workspace, s.Name, desc)
 		}
 	}
-	w.Flush()
+	_ = w.Flush()
 	return nil
 }
 

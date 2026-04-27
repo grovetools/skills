@@ -60,7 +60,7 @@ func integrateCreatesNew(ctx *harness.Context) error {
 	}
 
 	// Verify content contains the markers and payload
-	content, err := os.ReadFile(claudePath)
+	content, err := os.ReadFile(claudePath) //nolint:gosec // G304: test path
 	if err != nil {
 		return fmt.Errorf("failed to read CLAUDE.md: %w", err)
 	}
@@ -115,7 +115,7 @@ Do not remove this.
 	}
 
 	// Verify CLAUDE.md was updated
-	content, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md"))
+	content, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md")) //nolint:gosec // G304: test
 	if err != nil {
 		return fmt.Errorf("failed to read CLAUDE.md: %w", err)
 	}
@@ -167,7 +167,7 @@ func integrateReplacesBlock(ctx *harness.Context) error {
 	}
 
 	// Get content after first run
-	content1, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md"))
+	content1, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md")) //nolint:gosec // G304: test
 	if err != nil {
 		return fmt.Errorf("failed to read CLAUDE.md after first run: %w", err)
 	}
@@ -185,7 +185,7 @@ func integrateReplacesBlock(ctx *harness.Context) error {
 	}
 
 	// Get content after second run
-	content2, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md"))
+	content2, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md")) //nolint:gosec // G304: test
 	if err != nil {
 		return fmt.Errorf("failed to read CLAUDE.md after second run: %w", err)
 	}
@@ -243,7 +243,7 @@ This content should also be preserved.
 	}
 
 	// Verify all sections are preserved
-	content, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md"))
+	content, err := os.ReadFile(filepath.Join(projectDir, "CLAUDE.md")) //nolint:gosec // G304: test
 	if err != nil {
 		return fmt.Errorf("failed to read CLAUDE.md: %w", err)
 	}

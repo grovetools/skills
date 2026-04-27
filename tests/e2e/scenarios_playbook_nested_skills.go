@@ -146,7 +146,7 @@ func syncNestedPlaybookSkills(ctx *harness.Context) error {
 
 	// references/example.md under parent-skill must have been copied.
 	refPath := filepath.Join(ecosystemDir, ".claude", "skills", "parent-skill", "references", "example.md")
-	data, err := os.ReadFile(refPath)
+	data, err := os.ReadFile(refPath) //nolint:gosec // G304: test
 	if err != nil {
 		return fmt.Errorf("expected parent-skill references/example.md at %s: %w", refPath, err)
 	}
@@ -178,7 +178,7 @@ func resyncNestedPlaybookReferences(ctx *harness.Context) error {
 	}
 
 	destRef := filepath.Join(ecosystemDir, ".claude", "skills", "parent-skill", "references", "example.md")
-	data, err := os.ReadFile(destRef)
+	data, err := os.ReadFile(destRef) //nolint:gosec // G304: test
 	if err != nil {
 		return fmt.Errorf("destination references file missing after resync: %w", err)
 	}

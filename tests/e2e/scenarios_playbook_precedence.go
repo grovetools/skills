@@ -132,7 +132,7 @@ func runSyncAndReadMarker(ctx *harness.Context) (string, error) {
 	}
 
 	markerPath := filepath.Join(ecosystemDir, ".claude", "skills", "tier-marker", "SKILL.md")
-	data, err := os.ReadFile(markerPath)
+	data, err := os.ReadFile(markerPath) //nolint:gosec // G304: test
 	if err != nil {
 		return "", fmt.Errorf("tier-marker not synced to %s: %w", markerPath, err)
 	}

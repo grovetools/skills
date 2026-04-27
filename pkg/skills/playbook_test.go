@@ -15,13 +15,13 @@ description = "A minimal test playbook"
 version = "0.1.0"
 default_recipe = "feature"
 `
-	if err := os.WriteFile(filepath.Join(dir, "playbook.toml"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "playbook.toml"), []byte(manifest), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
 	// One skill
 	skillDir := filepath.Join(dir, "skills", "hello")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
+	if err := os.MkdirAll(skillDir, 0755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
 	skillMd := `---
@@ -31,31 +31,31 @@ description: A friendly greeting skill used to say hi to the user.
 
 Hello.
 `
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMd), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMd), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
 	// One prompt with purpose comment
-	if err := os.MkdirAll(filepath.Join(dir, "prompts"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "prompts"), 0755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
 	prompt := "<!-- purpose: Bootstrap a chat with strict rules -->\n\nSome body text.\n"
-	if err := os.WriteFile(filepath.Join(dir, "prompts", "bootstrap.md"), []byte(prompt), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "prompts", "bootstrap.md"), []byte(prompt), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
 	// One prompt without purpose comment — should fall back to first paragraph
 	fallback := "The first real line of the prompt.\n\nSecond paragraph.\n"
-	if err := os.WriteFile(filepath.Join(dir, "prompts", "fallback.md"), []byte(fallback), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "prompts", "fallback.md"), []byte(fallback), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
 	// One recipe
-	if err := os.MkdirAll(filepath.Join(dir, "recipes"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "recipes"), 0755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
 	recipe := "---\ndescription: Standard test recipe\n---\n\nbody\n"
-	if err := os.WriteFile(filepath.Join(dir, "recipes", "feature.md"), []byte(recipe), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "recipes", "feature.md"), []byte(recipe), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
@@ -90,14 +90,14 @@ func TestLoadPlaybookViaSearchPath(t *testing.T) {
 
 	root := t.TempDir()
 	pbDir := filepath.Join(root, "tiny")
-	if err := os.MkdirAll(pbDir, 0755); err != nil {
+	if err := os.MkdirAll(pbDir, 0755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
 	manifest := `name = "tiny"
 description = "Tiny"
 version = "0.0.1"
 `
-	if err := os.WriteFile(filepath.Join(pbDir, "playbook.toml"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(pbDir, "playbook.toml"), []byte(manifest), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
@@ -145,14 +145,14 @@ func TestLoadPlaybook_FromRegisteredWorkDir(t *testing.T) {
 
 	root := t.TempDir()
 	pbDir := filepath.Join(root, "gdv2-fixture")
-	if err := os.MkdirAll(filepath.Join(pbDir, "skills"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(pbDir, "skills"), 0755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
 	manifest := `name = "gdv2-fixture"
 description = "Fixture playbook for resolver tests"
 version = "1.0.0"
 `
-	if err := os.WriteFile(filepath.Join(pbDir, "playbook.toml"), []byte(manifest), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(pbDir, "playbook.toml"), []byte(manifest), 0644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 	RegisterPlaybookSearchPath(root)

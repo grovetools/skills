@@ -278,7 +278,7 @@ func LoadPlaybookFromDir(dir string) (*Playbook, error) {
 	}
 
 	manifestPath := filepath.Join(abs, "playbook.toml")
-	data, err := os.ReadFile(manifestPath)
+	data, err := os.ReadFile(manifestPath) //nolint:gosec // G304: path from resolved playbook
 	if err != nil {
 		return nil, fmt.Errorf("reading playbook manifest: %w", err)
 	}
@@ -310,7 +310,7 @@ func loadPlaybookSkills(skillsDir string) []PlaybookSkill {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(path) //nolint:gosec // G304: path from WalkDir
 		if err != nil {
 			return nil
 		}
@@ -346,16 +346,16 @@ func loadPlaybookPrompts(promptsDir string) []PlaybookPrompt {
 	if _, err := os.Stat(promptsDir); err != nil {
 		return nil
 	}
-	var out []PlaybookPrompt
 	entries, err := os.ReadDir(promptsDir)
 	if err != nil {
 		return nil
 	}
+	out := make([]PlaybookPrompt, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(promptsDir, entry.Name()))
+		content, err := os.ReadFile(filepath.Join(promptsDir, entry.Name())) //nolint:gosec // G304: path from ReadDir
 		if err != nil {
 			continue
 		}
@@ -399,16 +399,16 @@ func loadPlaybookRecipes(recipesDir string) []PlaybookRecipe {
 	if _, err := os.Stat(recipesDir); err != nil {
 		return nil
 	}
-	var out []PlaybookRecipe
 	entries, err := os.ReadDir(recipesDir)
 	if err != nil {
 		return nil
 	}
+	out := make([]PlaybookRecipe, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(recipesDir, entry.Name()))
+		content, err := os.ReadFile(filepath.Join(recipesDir, entry.Name())) //nolint:gosec // G304: path from ReadDir
 		if err != nil {
 			continue
 		}

@@ -171,7 +171,7 @@ description: A test skill for search functionality.
 # Test Skill
 
 This is a test skill for the search --files-only test.`
-	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil { //nolint:gosec // G306: test
 		return err
 	}
 

@@ -81,7 +81,7 @@ Scopes:
 
 			// Read existing file if it exists
 			if _, err := os.Stat(claudePath); err == nil {
-				content, err = os.ReadFile(claudePath)
+				content, err = os.ReadFile(claudePath) //nolint:gosec // G304: path constructed from user's workspace
 				if err != nil {
 					return fmt.Errorf("failed to read existing CLAUDE.md: %w", err)
 				}
@@ -106,7 +106,7 @@ Scopes:
 				newContent = append(content, []byte("\n"+block+"\n")...)
 			}
 
-			if err := os.WriteFile(claudePath, newContent, 0644); err != nil {
+			if err := os.WriteFile(claudePath, newContent, 0644); err != nil { //nolint:gosec // G306: CLAUDE.md must be world-readable
 				return fmt.Errorf("failed to write CLAUDE.md: %w", err)
 			}
 

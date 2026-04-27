@@ -56,9 +56,9 @@ func addSkillSourceSafely(sources map[string]SkillSource, name string, newSource
 
 // SyncSkillsToDirectory copies all discoverable skills to a destination directory.
 // Skills are collected from multiple sources with the following precedence (higher wins):
-//   1. User skills from ~/.config/grove/skills
-//   2. Ecosystem skills from the notebook (if project is part of an ecosystem)
-//   3. Project skills from the notebook (highest precedence)
+//  1. User skills from ~/.config/grove/skills
+//  2. Ecosystem skills from the notebook (if project is part of an ecosystem)
+//  3. Project skills from the notebook (highest precedence)
 //
 // Supports nested skill directories: skills/kitchen/prep/SKILL.md resolves as skill "prep"
 // and is synced flattened to destDir/prep/.
@@ -89,7 +89,7 @@ func SyncSkillsToDirectory(svc *service.Service, node *workspace.WorkspaceNode, 
 		return 0, nil
 	}
 
-	if err := os.MkdirAll(destDir, 0755); err != nil {
+	if err := os.MkdirAll(destDir, 0o755); err != nil { //nolint:gosec // G301: skills dir needs traversal
 		return 0, fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
@@ -115,7 +115,7 @@ func collectSkillsFromDir(dir string, skillSources map[string]string) {
 		return
 	}
 
-	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
@@ -141,7 +141,7 @@ func addSkillSources(dir string, sourceType SourceType, sources map[string]Skill
 		return
 	}
 
-	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
@@ -167,7 +167,7 @@ func addSkillSources(dir string, sourceType SourceType, sources map[string]Skill
 // addBuiltinSkillSources adds embedded/built-in skills to the sources map.
 // Supports nested builtin skills by walking the embedded FS recursively.
 func addBuiltinSkillSources(sources map[string]SkillSource) {
-	fs.WalkDir(embeddedSkillsFS, "data/skills", func(path string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(embeddedSkillsFS, "data/skills", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
@@ -191,11 +191,11 @@ func addBuiltinSkillSources(sources map[string]SkillSource) {
 
 // ListSkillSources returns a map of skill names to their source paths.
 // Skills are listed in precedence order (later sources override earlier):
-//   1. Built-in skills (embedded in binary)
-//   2. User skills (~/.config/grove/skills)
-//   3. Notebook skills (from all configured notebook workspaces)
-//   4. Ecosystem skills (from notebook)
-//   5. Project skills (from notebook)
+//  1. Built-in skills (embedded in binary)
+//  2. User skills (~/.config/grove/skills)
+//  3. Notebook skills (from all configured notebook workspaces)
+//  4. Ecosystem skills (from notebook)
+//  5. Project skills (from notebook)
 func ListSkillSources(svc *service.Service, node *workspace.WorkspaceNode) map[string]SkillSource {
 	sources := make(map[string]SkillSource)
 
@@ -452,7 +452,7 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		return result, nil
 	}
 
-	var synced []string
+	synced := make([]string, 0, len(resolved))
 	destPathsMap := make(map[string]bool)
 	for name, r := range resolved {
 		synced = append(synced, name)
@@ -461,7 +461,7 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		}
 	}
 
-	var destPaths []string
+	destPaths := make([]string, 0, len(destPathsMap))
 	for p := range destPathsMap {
 		destPaths = append(destPaths, p)
 	}
@@ -490,7 +490,7 @@ func cleanupRemovedSkills(skillsDir string, configuredSkills map[string]bool) {
 			continue
 		}
 		if configuredSkills == nil || !configuredSkills[entry.Name()] {
-			os.RemoveAll(filepath.Join(skillsDir, entry.Name()))
+			_ = os.RemoveAll(filepath.Join(skillsDir, entry.Name()))
 		}
 	}
 }
@@ -514,12 +514,12 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 			}
 			installedPerProvider[provider][skillName] = true
 
-			if err := os.MkdirAll(destBaseDir, 0755); err != nil {
+			if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
 				lastErr = fmt.Errorf("failed to create directory %s: %w", destBaseDir, err)
 				continue
 			}
 
-			os.RemoveAll(destPath)
+			_ = os.RemoveAll(destPath)
 
 			if r.SourceType == SourceTypeBuiltin {
 				files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
@@ -528,18 +528,18 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 					continue
 				}
 
-				if err := os.MkdirAll(destPath, 0755); err != nil {
+				if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301: skills dir
 					lastErr = err
 					continue
 				}
 
 				for relPath, content := range files {
 					filePath := filepath.Join(destPath, relPath)
-					if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+					if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil { //nolint:gosec // G301: skill subdir
 						lastErr = err
 						continue
 					}
-					if err := os.WriteFile(filePath, content, 0644); err != nil {
+					if err := os.WriteFile(filePath, content, 0o644); err != nil { //nolint:gosec // G306: skill files
 						lastErr = err
 						continue
 					}
@@ -582,27 +582,27 @@ func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, in
 				destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
 				destPath := filepath.Join(destBaseDir, skillName)
 
-				if err := os.MkdirAll(destBaseDir, 0755); err != nil {
+				if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
 					continue
 				}
 
-				os.RemoveAll(destPath)
+				_ = os.RemoveAll(destPath)
 
 				if r.SourceType == SourceTypeBuiltin {
 					files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
 					if err != nil {
 						continue
 					}
-					if err := os.MkdirAll(destPath, 0755); err != nil {
+					if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301
 						continue
 					}
 					for relPath, content := range files {
 						filePath := filepath.Join(destPath, relPath)
-						os.MkdirAll(filepath.Dir(filePath), 0755)
-						os.WriteFile(filePath, content, 0644)
+						_ = os.MkdirAll(filepath.Dir(filePath), 0o755) //nolint:gosec // G301
+						_ = os.WriteFile(filePath, content, 0o644)     //nolint:gosec // G306
 					}
 				} else {
-					corefs.CopyDir(r.PhysicalPath, destPath)
+					_ = corefs.CopyDir(r.PhysicalPath, destPath)
 				}
 			}
 		}
@@ -630,7 +630,7 @@ func pruneSkillsDir(root string, installedPerProvider map[string]map[string]bool
 			}
 			if !validNames[entry.Name()] {
 				path := filepath.Join(destBaseDir, entry.Name())
-				os.RemoveAll(path)
+				_ = os.RemoveAll(path)
 				if logger != nil {
 					logger.InfoPretty(fmt.Sprintf("Pruned unconfigured skill at: %s", path))
 				}
@@ -638,4 +638,3 @@ func pruneSkillsDir(root string, installedPerProvider map[string]map[string]bool
 		}
 	}
 }
-

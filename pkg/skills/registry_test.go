@@ -20,17 +20,16 @@ func setupAuthTestWorkspace(t *testing.T, useSkills []string) string {
 
 	// Create minimal global grove.toml (required for config.LoadDefault)
 	globalConfigDir := filepath.Join(tmpHome, ".config", "grove")
-	if err := os.MkdirAll(globalConfigDir, 0o755); err != nil {
+	if err := os.MkdirAll(globalConfigDir, 0o755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(globalConfigDir, "grove.toml"), []byte(`version = "1.0"
-`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(globalConfigDir, "grove.toml"), []byte(`version = "1.0"`+"\n"), 0o644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
 	// Create project directory with git repo
 	projectDir := filepath.Join(tmpHome, "test-project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+	if err := os.MkdirAll(projectDir, 0o755); err != nil { //nolint:gosec // G301: test
 		t.Fatal(err)
 	}
 
@@ -48,7 +47,7 @@ use = [`
 	}
 	toml += "]\n"
 
-	if err := os.WriteFile(filepath.Join(projectDir, "grove.toml"), []byte(toml), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "grove.toml"), []byte(toml), 0o644); err != nil { //nolint:gosec // G306: test
 		t.Fatal(err)
 	}
 
@@ -58,7 +57,7 @@ use = [`
 		{"git", "add", "."},
 		{"git", "-c", "user.name=test", "-c", "user.email=test@test.com", "commit", "-m", "init"},
 	} {
-		cmd := exec.Command(args[0], args[1:]...)
+		cmd := exec.Command(args[0], args[1:]...) //nolint:gosec // G204: test helper with fixed args
 		cmd.Dir = projectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git command %v failed: %s\n%s", args, err, out)

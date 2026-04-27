@@ -21,22 +21,22 @@ import (
 // DisplayNode represents a single row in the tree display.
 // It can be either a group header or a skill leaf.
 type DisplayNode struct {
-	Name                string
-	IsGroup             bool
-	Prefix              string // Tree prefix (├─, └─, etc.)
-	Group               string // Group name this skill belongs to
-	Domain              string
-	Source              skills.SourceType
-	Description         string
-	Path                string
-	Workspace           string // Workspace name for workspace-derived skills
-	Depth               int    // Nesting depth (0 for top-level skills, 1+ for sub-skills)
-	ParentSkill         string // Name of parent skill if this is a sub-skill
-	ConfiguredProject       bool // Skill is configured in project grove.toml
-	ConfiguredEcosystem     bool // Skill is configured in ecosystem grove.toml
-	ConfiguredGlobal        bool // Skill is configured in global config
-	ConfiguredUserProject   bool // Skill is in user's global config scoped to this project
-	ConfiguredUserEcosystem bool // Skill is in user's global config scoped to this ecosystem
+	Name                    string
+	IsGroup                 bool
+	Prefix                  string // Tree prefix (├─, └─, etc.)
+	Group                   string // Group name this skill belongs to
+	Domain                  string
+	Source                  skills.SourceType
+	Description             string
+	Path                    string
+	Workspace               string // Workspace name for workspace-derived skills
+	Depth                   int    // Nesting depth (0 for top-level skills, 1+ for sub-skills)
+	ParentSkill             string // Name of parent skill if this is a sub-skill
+	ConfiguredProject       bool   // Skill is configured in project grove.toml
+	ConfiguredEcosystem     bool   // Skill is configured in ecosystem grove.toml
+	ConfiguredGlobal        bool   // Skill is configured in global config
+	ConfiguredUserProject   bool   // Skill is in user's global config scoped to this project
+	ConfiguredUserEcosystem bool   // Skill is in user's global config scoped to this ecosystem
 }
 
 // Model represents the skills browser TUI state.
@@ -49,14 +49,14 @@ type Model struct {
 	theme       *theme.Theme
 
 	// Display state
-	nodes       []DisplayNode
-	cursor      int
-	width       int
-	height      int
-	ready       bool
-	loading     bool
-	statusMsg   string
-	errorMsg    string
+	nodes     []DisplayNode
+	cursor    int
+	width     int
+	height    int
+	ready     bool
+	loading   bool
+	statusMsg string
+	errorMsg  string
 
 	// View mode
 	showAllSkills bool // false = show only configured skills, true = show all
@@ -146,7 +146,7 @@ type skillEntry struct {
 // buildDisplayNodes creates the tree structure for display.
 func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]DisplayNode, error) {
 	// Collect all skills from various sources
-	var allSkills []skillEntry
+	allSkills := make([]skillEntry, 0) //nolint:prealloc // size unknown until sources loaded
 
 	// Determine configured sets at each level
 	globalSet := make(map[string]bool)
@@ -294,7 +294,7 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 
 		// Try to get domain from SKILL.md
 		skillMDPath := filepath.Join(ws.Path, "SKILL.md")
-		if content, err := os.ReadFile(skillMDPath); err == nil {
+		if content, err := os.ReadFile(skillMDPath); err == nil { //nolint:gosec // G304: path from workspace
 			if meta, err := skills.ParseSkillFrontmatter(content); err == nil {
 				if meta.Domain != "" {
 					domain = meta.Domain
@@ -338,7 +338,7 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 
 	// Separate top-level skills from sub-skills
 	topLevel := make(map[string][]skillEntry)  // group -> top-level skills
-	subSkills := make(map[string][]skillEntry)  // parentSkillName -> sub-skills
+	subSkills := make(map[string][]skillEntry) // parentSkillName -> sub-skills
 	for _, s := range allSkills {
 		if s.parentSkill != "" {
 			subSkills[s.parentSkill] = append(subSkills[s.parentSkill], s)
@@ -348,14 +348,14 @@ func buildDisplayNodes(svc *service.Service, node *workspace.WorkspaceNode) ([]D
 	}
 
 	// Sort groups
-	var groups []string
+	groups := make([]string, 0, len(topLevel))
 	for g := range topLevel {
 		groups = append(groups, g)
 	}
 	sort.Strings(groups)
 
 	// Build flat node list with tree prefixes, nesting sub-skills under parents
-	var nodes []DisplayNode
+	nodes := make([]DisplayNode, 0, len(allSkills)+len(groups))
 	for _, groupName := range groups {
 		skillList := topLevel[groupName]
 		sort.Slice(skillList, func(i, j int) bool {

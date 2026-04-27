@@ -28,7 +28,7 @@ func pollCondition(timeout time.Duration, check func() bool) error {
 // pollFileContains polls until a file exists and contains the expected substring.
 func pollFileContains(path, expected string, timeout time.Duration) error {
 	return pollCondition(timeout, func() bool {
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(path) //nolint:gosec // G304: test helper
 		if err != nil {
 			return false
 		}
@@ -174,7 +174,7 @@ func startGrovedDaemon(ctx *harness.Context) error {
 
 	groveHome := ctx.GetString("grove_home")
 
-	cmd := exec.Command(binary, "start", "--collectors", "workspace")
+	cmd := exec.Command(binary, "start", "--collectors", "workspace") //nolint:gosec // G204: binary from FindDaemonBinary
 	cmd.Env = append(os.Environ(),
 		"GROVE_HOME="+groveHome,
 		"HOME="+ctx.HomeDir(),

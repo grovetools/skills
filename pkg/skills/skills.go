@@ -125,7 +125,7 @@ func getUserSkillsPathWithConfig(svc *service.Service) string {
 // Uses recursive WalkDir to discover nested builtin skills.
 func ListBuiltinSkills() []string {
 	var names []string
-	fs.WalkDir(embeddedSkillsFS, "data/skills", func(path string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(embeddedSkillsFS, "data/skills", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
 			return nil
 		}
@@ -149,7 +149,7 @@ func ListSkillsWithService(svc *service.Service) ([]string, map[string]string, e
 		skillMap[name] = string(src.Type)
 	}
 
-	var skillNames []string
+	skillNames := make([]string, 0, len(skillMap))
 	for name := range skillMap {
 		skillNames = append(skillNames, name)
 	}
@@ -168,7 +168,7 @@ func readSkillFromDisk(skillRoot string) (map[string][]byte, error) {
 			return nil
 		}
 		relPath, _ := filepath.Rel(skillRoot, path)
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(path) //nolint:gosec // G304: path from WalkDir
 		if err != nil {
 			return err
 		}

@@ -133,8 +133,7 @@ func isTransitivelyAuthorized(svc *service.Service, node *workspace.WorkspaceNod
 
 	// Collect all directly authorized skill names, including skills
 	// owned by authorized playbooks (see ExpandUseWithPlaybookSkills).
-	var authorizedNames []string
-	authorizedNames = append(authorizedNames, ExpandUseWithPlaybookSkills(node, cfg.Use)...)
+	authorizedNames := ExpandUseWithPlaybookSkills(node, cfg.Use)
 	for name := range cfg.Dependencies {
 		authorizedNames = append(authorizedNames, name)
 	}

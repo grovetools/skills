@@ -67,35 +67,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case msg.Type == tea.KeyCtrlD:
 				// Half-page down
-				m.viewport.HalfViewDown()
+				m.viewport.HalfPageDown()
 				return m, nil
 			case msg.Type == tea.KeyCtrlU:
 				// Half-page up
-				m.viewport.HalfViewUp()
+				m.viewport.HalfPageUp()
 				return m, nil
 			case msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'j':
 				// Scroll down one line
-				m.viewport.LineDown(1)
+				m.viewport.ScrollDown(1)
 				return m, nil
 			case msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'k':
 				// Scroll up one line
-				m.viewport.LineUp(1)
+				m.viewport.ScrollUp(1)
 				return m, nil
 			case msg.Type == tea.KeyDown:
 				// Arrow down
-				m.viewport.LineDown(1)
+				m.viewport.ScrollDown(1)
 				return m, nil
 			case msg.Type == tea.KeyUp:
 				// Arrow up
-				m.viewport.LineUp(1)
+				m.viewport.ScrollUp(1)
 				return m, nil
 			case key.Matches(msg, m.keys.PageDown):
 				// Page down
-				m.viewport.ViewDown()
+				m.viewport.PageDown()
 				return m, nil
 			case key.Matches(msg, m.keys.PageUp):
 				// Page up
-				m.viewport.ViewUp()
+				m.viewport.PageUp()
 				return m, nil
 			default:
 				// Route all other keys to the viewport
@@ -520,7 +520,7 @@ func editSkillCmd(skill *DisplayNode) tea.Cmd {
 		editor = "vi"
 	}
 
-	return tea.ExecProcess(exec.Command(editor, skillPath), func(err error) tea.Msg {
+	return tea.ExecProcess(exec.Command(editor, skillPath), func(err error) tea.Msg { //nolint:gosec // G204: editor from $EDITOR
 		if err != nil {
 			return editCompleteMsg{err: err}
 		}
@@ -578,7 +578,7 @@ func (m *Model) rightPaneWidth() int {
 	effectiveWidth := m.width // Padding handled by pager wrapper
 	leftWidth := m.getLeftPaneWidth()
 	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
-	return rightWidth - 6                         // Account for border (2) + padding (2) + safety margin (2)
+	return rightWidth - 6                        // Account for border (2) + padding (2) + safety margin (2)
 }
 
 // viewportHeight returns the height available for the viewport.
