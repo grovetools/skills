@@ -106,7 +106,7 @@ Scopes:
 				newContent = append(content, []byte("\n"+block+"\n")...)
 			}
 
-			if err := os.WriteFile(claudePath, newContent, 0644); err != nil { //nolint:gosec // G306: CLAUDE.md must be world-readable
+			if err := os.WriteFile(claudePath, newContent, 0o644); err != nil { //nolint:gosec // G306: CLAUDE.md must be world-readable
 				return fmt.Errorf("failed to write CLAUDE.md: %w", err)
 			}
 

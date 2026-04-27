@@ -157,7 +157,7 @@ This is a test skill created for the show command E2E test.
 
 Use this skill to verify the show command works correctly.`
 
-	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil { //nolint:gosec // G306: test
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte(skillContent), 0o644); err != nil { //nolint:gosec // G306: test
 		return err
 	}
 
