@@ -102,7 +102,7 @@ build-all:
 test-e2e: build
 	@echo "Running E2E tests..."
 	@go build -o $(BIN_DIR)/$(E2E_BINARY_NAME) ./tests/e2e/
-	@GROVE_SKILLS_BINARY=$(abspath $(BIN_DIR)/$(BINARY_NAME)) tend run $(ARGS)
+	@GROVE_SKILLS_BINARY=$(abspath $(BIN_DIR)/$(BINARY_NAME)) tend run -p $(ARGS)
 
 # Show available targets
 help:
