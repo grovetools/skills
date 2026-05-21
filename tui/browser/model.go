@@ -80,10 +80,13 @@ type Model struct {
 
 	// Sequence state for multi-key bindings (gg, etc.)
 	sequence *keymap.SequenceState
+
+	// hosted is true when running inside treemux; edit emits embed messages
+	hosted bool
 }
 
 // New creates a new skills browser model.
-func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode) Model {
+func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode, hosted bool) Model {
 	keys := skillskeymap.NewBrowserKeyMap(cfg)
 	th := theme.DefaultTheme
 
@@ -103,9 +106,10 @@ func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode
 		help:          &helpModel,
 		theme:         th,
 		loading:       true,
-		showAllSkills: false, // Default to contextual view (only configured skills)
+		showAllSkills: false,
 		filterInput:   ti,
 		sequence:      keymap.NewSequenceState(),
+		hosted:        hosted,
 	}
 }
 

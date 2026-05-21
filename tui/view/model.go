@@ -22,8 +22,9 @@ type Model struct {
 }
 
 // New constructs a Model wrapping a fresh browser.
-func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode) Model {
-	b := browser.New(svc, cfg, node)
+func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode, hosted ...bool) Model {
+	h := len(hosted) > 0 && hosted[0]
+	b := browser.New(svc, cfg, node, h)
 	page := &browserPage{inner: b}
 	return Model{pager: pager.NewWith([]pager.Page{page}, pager.KeyMapFromBase(keymap.NewBase()), pager.Config{
 		OuterPadding: [4]int{1, 2, 0, 2},

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/grovetools/core/tui/embed"
 	"github.com/grovetools/core/tui/keymap"
 	"github.com/grovetools/skills/pkg/service"
 	"github.com/grovetools/skills/pkg/skills"
@@ -299,6 +300,12 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Edit), key.Matches(msg, m.keys.Confirm):
 		skill := m.SelectedSkill()
 		if skill != nil && skill.Source != skills.SourceTypeBuiltin {
+			if m.hosted {
+				skillPath := filepath.Join(skill.Path, "SKILL.md")
+				return m, func() tea.Msg {
+					return embed.SplitEditorRequestMsg{Path: skillPath, Focus: true}
+				}
+			}
 			return m, editSkillCmd(skill)
 		} else if skill != nil {
 			m.statusMsg = "Cannot edit builtin skills"
