@@ -462,6 +462,10 @@ func syncMultipleWorkspaces(svc *service.Service, currentNode *workspace.Workspa
 			continue
 		}
 
+		for _, name := range result.MissingSkills {
+			logger.WarnPretty(fmt.Sprintf("  %s: skipping '%s' (declared in config but not found in any source)", node.Name, name))
+		}
+
 		if len(result.SyncedSkills) > 0 {
 			if dryRun {
 				logger.InfoPretty(fmt.Sprintf("  %s: would sync %d skills", node.Name, len(result.SyncedSkills)))

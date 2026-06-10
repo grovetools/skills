@@ -592,6 +592,11 @@ func (m Model) FooterView() string {
 		}
 	}
 	status = fmt.Sprintf("%d skills", skillCount)
+	if m.currentNode == nil {
+		// Surface the missing workspace context persistently so users
+		// learn toggles are disabled before pressing p/E/u.
+		status += " │ " + m.theme.Warning.Render("no workspace context")
+	}
 
 	if m.errorMsg != "" {
 		status = m.theme.Error.Render(m.errorMsg)

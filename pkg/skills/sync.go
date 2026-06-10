@@ -381,8 +381,12 @@ type SyncOptions struct {
 type SyncResult struct {
 	Workspace    string
 	SyncedSkills []string
-	DestPaths    []string
-	Error        string
+	// MissingSkills lists configured skills that could not be resolved
+	// from any source. They are skipped (with a warning) rather than
+	// failing the sync — see ResolveConfiguredSkills.
+	MissingSkills []string
+	DestPaths     []string
+	Error         string
 }
 
 // SyncWorkspace resolves and installs skills for a single workspace node.
@@ -437,9 +441,15 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		return result, nil
 	}
 
-	resolved, err := ResolveConfiguredSkills(svc, node, skillsCfg)
+	resolved, missing, err := ResolveConfiguredSkills(svc, node, skillsCfg)
 	if err != nil {
 		return result, fmt.Errorf("failed to resolve skills: %w", err)
+	}
+	result.MissingSkills = missing
+	if logger != nil {
+		for _, name := range missing {
+			logger.WarnPretty(fmt.Sprintf("Skipping '%s': declared in config but not found in any source", name))
+		}
 	}
 
 	if len(resolved) == 0 {

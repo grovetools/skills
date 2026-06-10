@@ -64,9 +64,15 @@ func ExpandUseWithPlaybookSkills(node *workspace.WorkspaceNode, use []string) []
 // ResolveConfiguredSkills resolves all skills declared in the configuration.
 // It also recursively traverses SKILL.md dependencies to implicitly resolve
 // nested sub-skills (via skill_sequence and requires).
-func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode, cfg *SkillsConfig) (map[string]ResolvedSkill, error) {
+//
+// Skills that cannot be found in any source are returned in the missing
+// slice rather than aborting resolution — config layers (global, ecosystem,
+// project) accumulate stale entries over time, and one dead entry must not
+// hold every other skill hostage. Genuine config contradictions (circular
+// dependencies, source pin mismatches) still return an error.
+func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode, cfg *SkillsConfig) (resolved map[string]ResolvedSkill, missing []string, err error) {
 	if cfg == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	availableSources := ListSkillSources(svc, node)
@@ -81,8 +87,15 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 	// without requiring redundant per-skill entries in [skills] use.
 	useWithPlaybooks := ExpandUseWithPlaybookSkills(node, cfg.Use)
 
-	resolved := make(map[string]ResolvedSkill)
+	resolved = make(map[string]ResolvedSkill)
 	inProgress := make(map[string]bool)
+	missingSeen := make(map[string]bool)
+	recordMissing := func(name string) {
+		if !missingSeen[name] {
+			missingSeen[name] = true
+			missing = append(missing, name)
+		}
+	}
 
 	var resolveTransitive func(skillName string, targetProviders []string, expectedSource string) error
 	resolveTransitive = func(skillName string, targetProviders []string, expectedSource string) error {
@@ -120,7 +133,8 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 		if wsName != "" {
 			skill, err := FindSkillAcrossWorkspaces(svc, resolveName)
 			if err != nil || skill == nil {
-				return fmt.Errorf("skill '%s' declared in config but not found in workspace '%s'", skillName, wsName)
+				recordMissing(skillName)
+				return nil
 			}
 			src = SkillSource{
 				Path:    skill.Path,
@@ -134,7 +148,8 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 		}
 
 		if !found {
-			return fmt.Errorf("skill '%s' declared in config but not found in any source", skillName)
+			recordMissing(skillName)
+			return nil
 		}
 
 		if depSource != "" && wsName == "" {
@@ -192,7 +207,7 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 
 	for _, skillName := range useWithPlaybooks {
 		if err := resolveTransitive(skillName, defaultProviders, ""); err != nil {
-			return nil, err
+			return nil, missing, err
 		}
 	}
 
@@ -200,12 +215,12 @@ func ResolveConfiguredSkills(svc *service.Service, node *workspace.WorkspaceNode
 		_, unqualifiedName := ResolveQualifiedSkillName(skillName)
 		if _, exists := resolved[unqualifiedName]; !exists {
 			if err := resolveTransitive(skillName, defaultProviders, ""); err != nil {
-				return nil, err
+				return nil, missing, err
 			}
 		}
 	}
 
-	return resolved, nil
+	return resolved, missing, nil
 }
 
 // sourceStringToType converts a source string from config to SourceType.
