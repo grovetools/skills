@@ -67,9 +67,16 @@ Exit codes:
 			}
 
 			// Try to resolve all declared skills
-			resolved, err := skills.ResolveConfiguredSkills(svc, node, skillsCfg)
+			resolved, missing, err := skills.ResolveConfiguredSkills(svc, node, skillsCfg)
 			if err != nil {
 				fmt.Printf("✗ Validation failed: %v\n", err)
+				os.Exit(1)
+			}
+			if len(missing) > 0 {
+				fmt.Println("✗ Validation failed: skills declared in config but not found in any source:")
+				for _, name := range missing {
+					fmt.Printf("  ✗ %s\n", name)
+				}
 				os.Exit(1)
 			}
 

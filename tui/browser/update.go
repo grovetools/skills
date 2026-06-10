@@ -15,6 +15,10 @@ import (
 	"github.com/grovetools/skills/pkg/skills"
 )
 
+// noWorkspaceMsg explains why grove.toml toggle keys are disabled when the
+// browser was opened without a resolvable grove workspace context.
+const noWorkspaceMsg = "No workspace context — open the browser from a grove workspace to toggle skills"
+
 // Update handles messages and updates the model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -326,7 +330,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if skill == nil {
 			m.statusMsg = "Select a skill first"
 		} else {
-			m.statusMsg = "Not in a project context"
+			m.statusMsg = noWorkspaceMsg
 		}
 		return m, nil
 
@@ -341,12 +345,12 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				tomlPath := filepath.Join(ecoPath, "grove.toml")
 				return m, toggleSkillCmd(tomlPath, skill.Name, "Ecosystem")
 			} else {
-				m.statusMsg = "Not in an ecosystem context"
+				m.statusMsg = "Workspace is not part of an ecosystem"
 			}
 		} else if skill == nil {
 			m.statusMsg = "Select a skill first"
 		} else {
-			m.statusMsg = "Not in a project context"
+			m.statusMsg = noWorkspaceMsg
 		}
 		return m, nil
 
@@ -381,7 +385,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if skill == nil {
 			m.statusMsg = "Select a skill first"
 		} else {
-			m.statusMsg = "Not in a project context"
+			m.statusMsg = noWorkspaceMsg
 		}
 		return m, nil
 	}
