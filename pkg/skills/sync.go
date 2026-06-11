@@ -573,52 +573,58 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 	return syncedCount, lastErr
 }
 
-// syncSkillsToWorktrees syncs resolved skills to all worktrees under .grove-worktrees/.
+// syncSkillsToWorktrees syncs resolved skills to all worktrees under the
+// repository's worktree bases (workspace.WorktreeBases).
+//
+// Each base is enumerated with a single-level os.ReadDir, so worktrees with
+// nested branch-style names (containing '/') are NOT reached — a known,
+// deliberately preserved limitation of the original enumeration.
 func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger) {
-	worktreesDir := filepath.Join(gitRoot, ".grove-worktrees")
-	entries, err := os.ReadDir(worktreesDir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, worktreesDir := range workspace.WorktreeBases(gitRoot) {
+		entries, err := os.ReadDir(worktreesDir)
+		if err != nil {
 			continue
 		}
-		wtPath := filepath.Join(worktreesDir, entry.Name())
 
-		for skillName, r := range resolved {
-			for _, provider := range r.Providers {
-				destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
-				destPath := filepath.Join(destBaseDir, skillName)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			wtPath := filepath.Join(worktreesDir, entry.Name())
 
-				if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
-					continue
-				}
+			for skillName, r := range resolved {
+				for _, provider := range r.Providers {
+					destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
+					destPath := filepath.Join(destBaseDir, skillName)
 
-				_ = os.RemoveAll(destPath)
-
-				if r.SourceType == SourceTypeBuiltin {
-					files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
-					if err != nil {
+					if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
 						continue
 					}
-					if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301
-						continue
+
+					_ = os.RemoveAll(destPath)
+
+					if r.SourceType == SourceTypeBuiltin {
+						files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
+						if err != nil {
+							continue
+						}
+						if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301
+							continue
+						}
+						for relPath, content := range files {
+							filePath := filepath.Join(destPath, relPath)
+							_ = os.MkdirAll(filepath.Dir(filePath), 0o755) //nolint:gosec // G301
+							_ = os.WriteFile(filePath, content, 0o644)     //nolint:gosec // G306
+						}
+					} else {
+						_ = corefs.CopyDir(r.PhysicalPath, destPath)
 					}
-					for relPath, content := range files {
-						filePath := filepath.Join(destPath, relPath)
-						_ = os.MkdirAll(filepath.Dir(filePath), 0o755) //nolint:gosec // G301
-						_ = os.WriteFile(filePath, content, 0o644)     //nolint:gosec // G306
-					}
-				} else {
-					_ = corefs.CopyDir(r.PhysicalPath, destPath)
 				}
 			}
-		}
 
-		if prune {
-			pruneSkillsDir(wtPath, installedPerProvider, logger)
+			if prune {
+				pruneSkillsDir(wtPath, installedPerProvider, logger)
+			}
 		}
 	}
 }
