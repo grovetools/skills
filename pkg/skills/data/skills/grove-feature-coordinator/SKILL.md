@@ -114,6 +114,9 @@ grove build --json   # Full ecosystem build; all submodules must pass
 | `flow plan status <dir> --json` | Check job statuses (JSON) |
 | `flow complete <slug> <job-file>` | Mark a job as completed |
 | `flow plan retry <job-file> [--run] [--force]` | Reset a failed/orphaned job to pending (no frontmatter edits) |
+| `flow plan wait <job-file> [--timeout DUR] [--any]` | Block until job(s) reach a terminal state (exit 0 completed / 1 failed) |
+| `flow plan add ... --json` | Machine-readable `{path,id,number,title}` output for scripting |
+| `flow plan add ... --run` | Create the job and submit it in one step |
 | `flow agent list` | List all running agents |
 | `flow agent read <slug> <job>` | Read agent's terminal output |
 | `flow agent status <slug> <job>` | Check if agent is idle/busy |
@@ -127,6 +130,7 @@ grove build --json   # Full ecosystem build; all submodules must pass
 | `nb list --json` | List with full paths (JSON) |
 | `nb new "title" -t inbox --no-edit` | Create inbox item (pipe body via stdin) |
 | `nb promote <note-path> --plan <plan-dir>` | Promote a note to a job in an existing plan |
+| `nb promote ... --type headless_agent --model M --effort E` | Promote straight to a ready agent job (sets `pending`, no frontmatter edits) |
 | `flow plan demote <job-file>` | Demote a job back to an nb inbox note |
 
 ## Creating Notes / Filing Tickets
@@ -337,7 +341,9 @@ flow plan run <dir>/05-phase1-impl.md &
 
 ## Gotchas and Tips
 
-**Chat jobs land in `pending_user` status after the LLM responds.** You must `flow complete <slug> <job>` before dependent impl jobs can run. Without this, the orchestrator blocks the impl job even though the chat is done.
+**Chat jobs land in `pending_user` status after the LLM responds.** You must `flow complete <slug> <job>` before dependent impl jobs can run — `pending_user` is the coordinator's review gate. Two escape hatches: set `auto_complete: true` in a chat job's frontmatter to skip the gate (mechanical one-shot chats only — dependents fire on unreviewed output); and to continue a `pending_user` or `completed` chat, just append your turn after the `<!-- grove: {"template": "chat"} -->` marker and `flow plan run` it — the run path auto-reopens jobs with new user content (no status surgery).
+
+**Useful job frontmatter fields** (all optional): `effort: <level>` — passed to the claude CLI as `--effort`; `model:` — now actually plumbed to claude agent jobs (it was silently ignored before 2026-06-11; daemon must postdate that); `retry_transient: N` — auto-retry transient API failures (timeouts/5xx/529) with backoff before marking failed; `notify_on_complete: <channel>` — push a notify message when the job reaches a terminal state instead of polling.
 
 **Don't curate context for impl agents.** They read the codebase directly and get their plan from the dependency job's chat transcript. Context curation is only valuable for chat/oneshot jobs where the LLM has no file access.
 
@@ -375,6 +381,8 @@ Each worktree gets its own `groved` daemon, identified by socket name under `~/.
 
 - `groved-<worktree>-<hash>.sock` — worktree-scoped daemon. Safe to kill/restart freely when picking up a fresh build of daemon code from that worktree. No permission needed.
 - `groved-<ecosystem>-<hash>.sock` — main daemon driving the user's primary checkout. **Don't kill without explicit permission.** It may have other in-flight work (long-running envs, background jobs, attached sessions) the user cares about.
+
+**Upgrading the main daemon without casualties:** `grove daemon upgrade` drains the old daemon (SIGUSR1: socket handoff, finishes in-flight API calls), starts the new binary, and ADOPTS running detached agents by PID — running TTY panes and headless agents survive. See the `daemon-graceful-upgrade` concept note in the grovetools workspace for what's preserved. Staleness is visible via the treemux HUD badge, `grove doctor`, and `[WARN] daemon: ignored unknown frontmatter field` warnings on submit — that warning means the daemon predates a field you're using (e.g. `effort:`) and an upgrade is due.
 
 Identify which daemon by socket before sending a kill signal: `ls ~/.local/state/grove/groved-*.sock` plus `lsof <socket>` to find the PID. When in doubt, ask.
 
