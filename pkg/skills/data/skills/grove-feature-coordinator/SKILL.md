@@ -113,6 +113,7 @@ grove build --json   # Full ecosystem build; all submodules must pass
 | `flow plan run <job-file>` | Run a job |
 | `flow plan status <dir> --json` | Check job statuses (JSON) |
 | `flow complete <slug> <job-file>` | Mark a job as completed |
+| `flow plan retry <job-file> [--run] [--force]` | Reset a failed/orphaned job to pending (no frontmatter edits) |
 | `flow agent list` | List all running agents |
 | `flow agent read <slug> <job>` | Read agent's terminal output |
 | `flow agent status <slug> <job>` | Check if agent is idle/busy |
@@ -341,6 +342,22 @@ flow plan run <dir>/05-phase1-impl.md &
 **Don't curate context for impl agents.** They read the codebase directly and get their plan from the dependency job's chat transcript. Context curation is only valuable for chat/oneshot jobs where the LLM has no file access.
 
 **Don't change job frontmatter.** The `type`, `model`, `template`, and `status` fields are set by the user or `flow plan add`. Changing them silently alters job dispatch behavior. Once a job is `running`, don't edit its frontmatter at all — the daemon may re-read the file and get confused. Only edit idle/pending jobs.
+
+**Recover failed/orphaned jobs with `flow plan retry` — never hand-edit `status:`.**
+
+```bash
+flow plan retry <plan-dir>/05-impl.md          # failed → pending (clears last_error/completed_at/duration)
+flow plan retry <plan-dir>/05-impl.md --run    # reset AND immediately resubmit
+flow plan retry <plan-dir>/05-impl.md --force  # reset a stuck `running` job (orphaned agent)
+```
+
+- `failed` jobs (transient API timeouts, 529s, connection errors) reset cleanly; exit 0.
+- `running` jobs are refused with a liveness hint (`no live agent process found` vs `agent appears alive`) — only `--force` after confirming the agent is actually dead. To confirm: `ps eww <pid>` of candidate claude processes and look for `GROVE_FLOW_JOB_ID=<job-id>` in the env, since the job state file can say `running` after a silent agent death.
+- `completed`/`pending_user` are refused with guidance (use `flow plan run` semantics); exit 1, so scripts can branch on it.
+
+**Checking job status: the frontmatter `status:` field is canonical** (written atomically by the StatePersister), so `grep -m1 'status:' <job.md>` equals what `flow plan status --json` reports — both share one blind spot: a silently-died agent leaves `running` behind. For watch loops, poll the file or `flow plan status --json`; cross-check suspicious long-runners against live processes (or the job's `.artifacts/<job-id>/job.log` mtime — a stalled log is the tell).
+
+**Headless agents must never enter plan mode.** A headless session cannot approve a plan, so an agent that calls ExitPlanMode stalls at the prompt and the job "completes" with zero implementation (job file shows a plan summary, repo shows no commit). Put "DO NOT enter plan mode — implement directly and commit" in every headless impl prompt, and treat "completed but no commit" as the signature of this failure: `flow plan retry` it with the instruction added.
 
 **Agent monitoring during long runs:**
 
