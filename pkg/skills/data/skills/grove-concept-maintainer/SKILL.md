@@ -86,6 +86,7 @@ Rules files have sharp edges; all of these were found empirically:
 
 1. **Short-form aliases only**: `@a:<repo>/<path>` or `@a:<repo>::<preset>` — never `@a:<ecosystem>:<repo>/...`. The ecosystem prefix pins the primary checkout and breaks in worktrees; short form resolves context-aware from cwd.
 2. **Rule order matters across the alias boundary**: a `!*_test.go` placed *before* `@a:` directory lines does not filter them — later rules win. Generic exclusions go *after* all `@a:` lines; exact-path test re-includes (when tests are deliberately in scope) go last.
+   **And the trailing generic exclude is still not enough for imported presets**: when the preset is consumed via `@a:<ws>::concept-<id>` from another repo, the generic negation re-roots to the home repo and stops filtering alias files. Presets with dir-level `@a:` lines need alias-scoped negations too — `!@a:<repo>/<dir>/**/*_test.go` per aliased directory. Prove it both ways: `cx stats` on the preset directly AND on a one-line `@a:<ws>::concept-<id>` rules file from another repo must agree.
 3. **`cx lint` is blind to dead `@a:` lines** — it reports clean even when a cross-repo path matches nothing. Verify each `@a:` line contributes: put the single line in a temp rules file and check `cx stats --rules-file` shows >0 files; fix or drop dead lines.
 4. **Prove exclusions with the file list**: `cx list --rules-file <preset> | grep '_test\.'` — stats totals hide individual leaks.
 5. **Compile + cap**:
