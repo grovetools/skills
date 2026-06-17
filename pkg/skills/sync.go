@@ -12,6 +12,7 @@ import (
 	"github.com/grovetools/core/git"
 	"github.com/grovetools/core/logging"
 	"github.com/grovetools/core/pkg/workspace"
+	"github.com/grovetools/core/pkg/worktreeregistry"
 	"github.com/grovetools/core/util/pathutil"
 	"github.com/grovetools/skills/pkg/service"
 )
@@ -573,59 +574,139 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 	return syncedCount, lastErr
 }
 
-// syncSkillsToWorktrees syncs resolved skills to all worktrees under the
-// repository's worktree bases (workspace.WorktreeBases).
-//
-// Each base is enumerated with a single-level os.ReadDir, so worktrees with
-// nested branch-style names (containing '/') are NOT reached — a known,
-// deliberately preserved limitation of the original enumeration.
+// syncSkillsToWorktrees syncs resolved skills to every worktree of the
+// repository rooted at gitRoot. Worktree paths come from collectWorktreePaths,
+// which unions the legacy workspace.WorktreeBases enumeration with the
+// per-worktree registry so anchored/XDG worktrees living under a different
+// sub-repo's base are reached.
 func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger) {
+	for _, wtPath := range collectWorktreePaths(gitRoot) {
+		syncSkillsToOneWorktree(wtPath, resolved, installedPerProvider, prune, logger)
+	}
+}
+
+// collectWorktreePaths returns the deduplicated absolute paths of every
+// worktree that should receive synced skills for the repository rooted at
+// gitRoot. It combines two sources:
+//
+//   - legacy enumeration of workspace.WorktreeBases(gitRoot) — a single-level
+//     os.ReadDir of each base, preserving the original behavior (including its
+//     limitation that nested branch-style names are not reached); and
+//   - the per-worktree registry (worktreeregistry.ListAll), filtered to this
+//     ecosystem. This captures anchored/XDG worktrees that live under a
+//     different sub-repo's XDG base and are therefore invisible to
+//     WorktreeBases.
+//
+// Paths are deduped by normalized absolute path so no worktree is synced twice.
+func collectWorktreePaths(gitRoot string) []string {
+	seen := make(map[string]struct{})
+	var paths []string
+
+	add := func(p string) {
+		key, err := pathutil.NormalizeForLookup(p)
+		if err != nil {
+			key = p
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		paths = append(paths, p)
+	}
+
+	// Source 1: legacy worktree bases (single-level enumeration).
 	for _, worktreesDir := range workspace.WorktreeBases(gitRoot) {
 		entries, err := os.ReadDir(worktreesDir)
 		if err != nil {
 			continue
 		}
-
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
 			}
-			wtPath := filepath.Join(worktreesDir, entry.Name())
+			add(filepath.Join(worktreesDir, entry.Name()))
+		}
+	}
 
-			for skillName, r := range resolved {
-				for _, provider := range r.Providers {
-					destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
-					destPath := filepath.Join(destBaseDir, skillName)
+	// Source 2: per-worktree registry, scoped to this ecosystem. Captures
+	// anchored worktrees living under a sub-repo's XDG base, which Source 1
+	// misses because they are not under WorktreeBases(gitRoot).
+	regEntries, err := worktreeregistry.ListAll()
+	if err == nil {
+		normRoot, nErr := pathutil.NormalizeForLookup(gitRoot)
+		if nErr != nil {
+			normRoot = gitRoot
+		}
+		for _, e := range regEntries {
+			if e == nil || e.AbsPath == "" {
+				continue
+			}
+			if !ownerInEcosystem(e.Owner, normRoot) {
+				continue
+			}
+			// Only sync worktrees that still exist on disk.
+			if info, statErr := os.Stat(e.AbsPath); statErr != nil || !info.IsDir() {
+				continue
+			}
+			add(e.AbsPath)
+		}
+	}
 
-					if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
-						continue
-					}
+	return paths
+}
 
-					_ = os.RemoveAll(destPath)
+// ownerInEcosystem reports whether a registry entry's Owner belongs to the
+// ecosystem rooted at normRoot (an already-normalized gitRoot). True when the
+// owner is gitRoot itself or a sub-repo nested under it.
+func ownerInEcosystem(owner, normRoot string) bool {
+	if owner == "" {
+		return false
+	}
+	normOwner, err := pathutil.NormalizeForLookup(owner)
+	if err != nil {
+		normOwner = owner
+	}
+	if normOwner == normRoot {
+		return true
+	}
+	return strings.HasPrefix(normOwner, normRoot+string(filepath.Separator))
+}
 
-					if r.SourceType == SourceTypeBuiltin {
-						files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
-						if err != nil {
-							continue
-						}
-						if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301
-							continue
-						}
-						for relPath, content := range files {
-							filePath := filepath.Join(destPath, relPath)
-							_ = os.MkdirAll(filepath.Dir(filePath), 0o755) //nolint:gosec // G301
-							_ = os.WriteFile(filePath, content, 0o644)     //nolint:gosec // G306
-						}
-					} else {
-						_ = corefs.CopyDir(r.PhysicalPath, destPath)
-					}
-				}
+// syncSkillsToOneWorktree writes the resolved skills into a single worktree at
+// wtPath and optionally prunes unconfigured skills.
+func syncSkillsToOneWorktree(wtPath string, resolved map[string]ResolvedSkill, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger) {
+	for skillName, r := range resolved {
+		for _, provider := range r.Providers {
+			destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
+			destPath := filepath.Join(destBaseDir, skillName)
+
+			if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
+				continue
 			}
 
-			if prune {
-				pruneSkillsDir(wtPath, installedPerProvider, logger)
+			_ = os.RemoveAll(destPath)
+
+			if r.SourceType == SourceTypeBuiltin {
+				files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
+				if err != nil {
+					continue
+				}
+				if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301
+					continue
+				}
+				for relPath, content := range files {
+					filePath := filepath.Join(destPath, relPath)
+					_ = os.MkdirAll(filepath.Dir(filePath), 0o755) //nolint:gosec // G301
+					_ = os.WriteFile(filePath, content, 0o644)     //nolint:gosec // G306
+				}
+			} else {
+				_ = corefs.CopyDir(r.PhysicalPath, destPath)
 			}
 		}
+	}
+
+	if prune {
+		pruneSkillsDir(wtPath, installedPerProvider, logger)
 	}
 }
 
