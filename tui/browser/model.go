@@ -72,6 +72,11 @@ type Model struct {
 	// Pane focus state
 	previewFocused bool
 
+	// previewOpen tracks whether the hosted side-split preview (v) is open
+	// for the current selection, so a second v toggles it closed. It is
+	// reset whenever the selection changes.
+	previewOpen bool
+
 	// Cached skill details
 	cachedSkillName string
 	cachedTree      string
@@ -589,12 +594,33 @@ func (m *Model) getLeftPaneWidth() int {
 	}
 
 	maxWidth += 4 // extra padding
-	maxAllowed := m.width * 40 / 100
-	if maxAllowed < 30 {
-		maxAllowed = 30 // Minimum reasonable width
+
+	// Desired width: content-driven, but never more than 40% of the panel.
+	result := maxWidth
+	if maxAllowed := m.width * 40 / 100; result > maxAllowed {
+		result = maxAllowed
 	}
-	if maxWidth > maxAllowed {
-		return maxAllowed
+
+	// Never crowd out the right pane. Reserve minRight columns (plus the
+	// 1-col divider) for it so the right pane width can't go negative at
+	// narrow total widths — the old hard 30-col floor pinned the left pane
+	// wider than the whole panel.
+	const (
+		minLeft  = 10
+		minRight = 20
+	)
+	if cap := m.width - minRight - 1; result > cap {
+		result = cap
 	}
-	return maxWidth
+	if result < minLeft {
+		result = minLeft
+	}
+	// Final safety: never equal or exceed the panel width.
+	if result > m.width-1 {
+		result = m.width - 1
+	}
+	if result < 1 {
+		result = 1
+	}
+	return result
 }

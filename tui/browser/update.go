@@ -195,6 +195,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Reload skills after toggle to refresh the view
 		return m, loadSkillsCmd(m.service, m.currentNode)
+
+	case embed.SplitEditorClosedMsg:
+		// The hosted preview split was closed (possibly from nvim's side);
+		// re-sync the toggle so the next v reopens it. Harmless if the host
+		// panel never forwards this message to the inner model.
+		m.previewOpen = false
+		return m, nil
 	}
 
 	// Update viewport
@@ -306,13 +313,36 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if skill != nil && skill.Source != skills.SourceTypeBuiltin {
 			if m.hosted {
 				skillPath := filepath.Join(skill.Path, "SKILL.md")
+				// Open the skill's SKILL.md as a path-deduped editor-<hash>
+				// window in the treemux rail (reuses a running nvim socket).
 				return m, func() tea.Msg {
-					return embed.SplitEditorRequestMsg{Path: skillPath, Focus: true}
+					return embed.EditRequestMsg{Path: skillPath}
 				}
 			}
 			return m, editSkillCmd(skill)
 		} else if skill != nil {
 			m.statusMsg = "Cannot edit builtin skills"
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.TogglePreview):
+		skill := m.SelectedSkill()
+		if skill != nil && skill.Source != skills.SourceTypeBuiltin {
+			skillPath := filepath.Join(skill.Path, "SKILL.md")
+			if m.hosted {
+				if m.previewOpen {
+					m.previewOpen = false
+					return m, func() tea.Msg { return embed.SplitEditorCloseRequestMsg{} }
+				}
+				m.previewOpen = true
+				return m, func() tea.Msg {
+					return embed.SplitEditorRequestMsg{Path: skillPath, Ratio: 0.35, Focus: false}
+				}
+			}
+			// standalone: detail pane already shows the rendered SKILL.md; fall back to opening it.
+			return m, editSkillCmd(skill)
+		} else if skill != nil {
+			m.statusMsg = "Cannot preview builtin skills"
 		}
 		return m, nil
 
@@ -432,6 +462,10 @@ func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateViewportContent updates the right pane content based on selection.
 func (m *Model) updateViewportContent() {
+	// The selection is changing, so any open hosted preview split no longer
+	// corresponds to the current skill; reset the toggle so the next v opens.
+	m.previewOpen = false
+
 	node := m.SelectedNode()
 	if node == nil {
 		m.viewport.SetContent("Select a skill to view details")
@@ -589,7 +623,11 @@ func (m *Model) rightPaneWidth() int {
 	effectiveWidth := m.width // Padding handled by pager wrapper
 	leftWidth := m.getLeftPaneWidth()
 	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
-	return rightWidth - 6                        // Account for border (2) + padding (2) + safety margin (2)
+	vpWidth := rightWidth - 6                    // Account for border (2) + padding (2) + safety margin (2)
+	if vpWidth < 1 {
+		vpWidth = 1 // Never feed a non-positive width into the viewport
+	}
+	return vpWidth
 }
 
 // viewportHeight returns the height available for the viewport.

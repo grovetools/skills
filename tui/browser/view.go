@@ -47,6 +47,9 @@ func (m Model) renderMainView() string {
 	// Calculate pane widths dynamically based on content
 	leftWidth := m.getLeftPaneWidth()
 	rightWidth := effectiveWidth - leftWidth - 1 // Account for divider
+	if rightWidth < 10 {
+		rightWidth = 10 // Keep the right pane drawable at narrow widths
+	}
 
 	// Calculate content height (total height minus header only).
 	// Footer is handled by the pager's SetFooter mechanism.
@@ -260,10 +263,18 @@ func (m Model) renderRightPane(width int, height int) string {
 		borderColor = m.theme.Colors.Orange
 	}
 
+	// Guard against non-positive inner width: a negative width fed into
+	// lipgloss border/padding styles breaks the box-drawing. Fall back to
+	// an unbordered minimal render when there isn't room for the border.
+	innerWidth := width - 4 // Account for border (2) and padding (2)
+	if innerWidth <= 0 {
+		return lipgloss.NewStyle().Width(maxInt(width, 1)).Render(content)
+	}
+
 	// Apply rounded border with focus-dependent color
 	// Don't set Height - let content determine height, border adds to it
 	style := lipgloss.NewStyle().
-		Width(width-4). // Account for border (2) and padding (2)
+		Width(innerWidth).
 		Padding(0, 1).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor)
@@ -284,6 +295,21 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	// Helper to wrap text
 	wrapText := func(text string) string {
 		return lipgloss.NewStyle().Width(contentWidth).Render(text)
+	}
+
+	// Helper to render a single-line "Label: value" pair where the value is
+	// hard-truncated so the label + value never exceeds the content width.
+	// Plain wrapping doesn't help here: the label is written before the value
+	// on the same line, and long absolute paths have no break points.
+	labeledLine := func(label, value string) string {
+		avail := contentWidth - lipgloss.Width(label)
+		if avail < 1 {
+			avail = 1
+		}
+		if lipgloss.Width(value) > avail {
+			value = truncateString(value, avail-1) + "…"
+		}
+		return value
 	}
 
 	// Header - use highlight color for skill name
@@ -310,7 +336,7 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 
 	if skill.Path != "" && skill.Path != "(builtin)" {
 		sb.WriteString(labelStyle.Render("Path: "))
-		sb.WriteString(wrapText(skill.Path))
+		sb.WriteString(valueStyle.Render(labeledLine("Path: ", skill.Path)))
 		sb.WriteString("\n")
 	}
 
@@ -420,8 +446,10 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	if m.cachedContent != "" {
 		sb.WriteString(sectionStyle.Render("Preview"))
 		sb.WriteString("\n")
-		// Render content with wrapping applied to the whole block
-		sb.WriteString(markdown.Render(m.cachedContent, m.theme))
+		// Render content and wrap to the detail pane width so long SKILL.md
+		// lines don't overflow the right pane at narrow widths.
+		rendered := markdown.Render(m.cachedContent, m.theme)
+		sb.WriteString(markdown.WrapForViewport(rendered, contentWidth))
 		sb.WriteString("\n")
 	}
 
@@ -630,6 +658,14 @@ func (m Model) FooterView() string {
 		return lipgloss.JoinVertical(lipgloss.Left, searchLine, statusLine)
 	}
 	return statusLine
+}
+
+// maxInt returns the larger of two ints.
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // truncateString truncates a string to a maximum width.
