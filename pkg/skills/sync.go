@@ -353,6 +353,12 @@ func GetSkillsDirectoryForWorktree(worktreePath, provider string) string {
 		return filepath.Join(worktreePath, ".codex", "skills")
 	case "opencode":
 		return filepath.Join(worktreePath, ".opencode", "skill")
+	case "pi":
+		// pi consumes the Agent Skills standard (SKILL.md + name/description
+		// frontmatter) natively from the project-local .pi/skills directory
+		// (loadSkills in packages/coding-agent/src/core/skills.ts of the pi
+		// source), so existing SKILL.md content syncs unchanged.
+		return filepath.Join(worktreePath, ".pi", "skills")
 	default:
 		return filepath.Join(worktreePath, ".claude", "skills")
 	}

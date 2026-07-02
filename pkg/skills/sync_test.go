@@ -218,3 +218,19 @@ func TestSyncSkillsToWorktrees_WritesIntoAnchoredWorktree(t *testing.T) {
 		t.Fatalf("expected synced skill at %s: %v", want, err)
 	}
 }
+
+func TestGetSkillsDirectoryForWorktree_ProviderMapping(t *testing.T) {
+	cases := map[string]string{
+		"claude":   filepath.Join("/wt", ".claude", "skills"),
+		"codex":    filepath.Join("/wt", ".codex", "skills"),
+		"opencode": filepath.Join("/wt", ".opencode", "skill"),
+		// pi loads project skills from .pi/skills (Agent Skills standard,
+		// skills.ts in the pi source).
+		"pi": filepath.Join("/wt", ".pi", "skills"),
+	}
+	for provider, want := range cases {
+		if got := GetSkillsDirectoryForWorktree("/wt", provider); got != want {
+			t.Errorf("GetSkillsDirectoryForWorktree(%q) = %q, want %q", provider, got, want)
+		}
+	}
+}

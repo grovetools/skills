@@ -581,7 +581,7 @@ func newSkillsRemoveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to remove from ('project', 'user', 'ecosystem', 'repo-root', or 'admin' for codex).")
-	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode').")
+	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode', 'pi').")
 	return cmd
 }
 
@@ -648,6 +648,15 @@ func getInstallPath(provider, scope string) (string, error) {
 		}
 	case "opencode":
 		pathParts = append(pathParts, ".opencode", "skill")
+	case "pi":
+		if scope == "user" {
+			// pi's user-global skills live under ~/.pi/agent/skills (NOT
+			// ~/.pi/skills) — see loadSkills in the pi source's skills.ts.
+			pathParts = append(pathParts, ".pi", "agent", "skills")
+		} else {
+			// Project-scoped skills load from <project>/.pi/skills.
+			pathParts = append(pathParts, ".pi", "skills")
+		}
 	default:
 		return "", fmt.Errorf("unsupported provider: %s", provider)
 	}
