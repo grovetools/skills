@@ -211,7 +211,7 @@ func TestSyncSkillsToWorktrees_WritesIntoAnchoredWorktree(t *testing.T) {
 		},
 	}
 
-	syncSkillsToWorktrees(gitRoot, resolved, nil, false, nil)
+	syncSkillsToWorktrees(gitRoot, resolved, nil, nil, false, nil, nil)
 
 	want := filepath.Join(GetSkillsDirectoryForWorktree(anchored, "claude"), "my-skill", "SKILL.md")
 	if _, err := os.Stat(want); err != nil {

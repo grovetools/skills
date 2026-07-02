@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/grovetools/core/config"
@@ -380,8 +381,17 @@ type SyncOptions struct {
 
 // SyncResult holds the results of a SyncWorkspace operation.
 type SyncResult struct {
-	Workspace    string
+	Workspace string
+	// SyncedSkills lists the skills whose destination copies actually
+	// CHANGED during this sync (source manifest differed from the stored
+	// .grove-sync-manifest in at least one destination). Unchanged skills
+	// are skipped entirely and not listed here. For dry runs no copying
+	// happens, so SyncedSkills reports the full resolved set (what a real
+	// run would ensure is installed).
 	SyncedSkills []string
+	// ResolvedSkills lists every skill resolved for this workspace,
+	// regardless of whether its destinations needed updating.
+	ResolvedSkills []string
 	// MissingSkills lists configured skills that could not be resolved
 	// from any source. They are skipped (with a warning) rather than
 	// failing the sync — see ResolveConfiguredSkills.
@@ -463,28 +473,33 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 		return result, nil
 	}
 
-	synced := make([]string, 0, len(resolved))
+	resolvedNames := make([]string, 0, len(resolved))
 	destPathsMap := make(map[string]bool)
 	for name, r := range resolved {
-		synced = append(synced, name)
+		resolvedNames = append(resolvedNames, name)
 		for _, p := range r.Providers {
 			destPathsMap[GetSkillsDirectoryForWorktree(gitRoot, p)] = true
 		}
 	}
+	sort.Strings(resolvedNames)
 
 	destPaths := make([]string, 0, len(destPathsMap))
 	for p := range destPathsMap {
 		destPaths = append(destPaths, p)
 	}
 
-	result.SyncedSkills = synced
+	result.ResolvedSkills = resolvedNames
 	result.DestPaths = destPaths
 
 	if opts.DryRun {
+		// No copying happens in a dry run, so report the full resolved set
+		// as what a real sync would ensure.
+		result.SyncedSkills = resolvedNames
 		return result, nil
 	}
 
-	_, err = SyncConfiguredSkills(gitRoot, resolved, opts.Prune, logger)
+	changed, err := SyncConfiguredSkills(gitRoot, resolved, opts.Prune, logger)
+	result.SyncedSkills = changed
 	return result, err
 }
 
@@ -508,14 +523,25 @@ func cleanupRemovedSkills(skillsDir string, configuredSkills map[string]bool) {
 
 // SyncConfiguredSkills syncs resolved skills to their target provider directories.
 // Skills are always flattened to a single level: .claude/skills/<skillName>/.
-func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, prune bool, logger *logging.PrettyLogger) (int, error) {
-	syncedCount := 0
+//
+// Change detection: each destination skill dir carries a .grove-sync-manifest
+// dot-file recording a hash of the source (relpath+size+mtime per file).
+// When the freshly computed source manifest matches the stored one, the
+// RemoveAll+copy is skipped entirely. Returns the sorted names of skills
+// whose destination copies actually changed (in the repo root or any
+// worktree).
+func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, prune bool, logger *logging.PrettyLogger) ([]string, error) {
 	var lastErr error
+
+	// Compute source manifests once, before any destination is touched.
+	manifests := computeSkillManifests(resolved)
+	changedSet := make(map[string]bool)
 
 	// Track installed RelPaths per provider for pruning
 	installedPerProvider := make(map[string]map[string]bool)
 
 	for skillName, r := range resolved {
+		manifest := manifests[skillName]
 		for _, provider := range r.Providers {
 			destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
 			destPath := filepath.Join(destBaseDir, skillName)
@@ -525,6 +551,11 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 			}
 			installedPerProvider[provider][skillName] = true
 
+			// Source unchanged since the last sync of this destination: no-op.
+			if manifest != "" && readStoredManifest(destPath) == manifest {
+				continue
+			}
+
 			if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
 				lastErr = fmt.Errorf("failed to create directory %s: %w", destBaseDir, err)
 				continue
@@ -532,37 +563,12 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 
 			_ = os.RemoveAll(destPath)
 
-			if r.SourceType == SourceTypeBuiltin {
-				files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
-				if err != nil {
-					lastErr = err
-					continue
-				}
-
-				if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301: skills dir
-					lastErr = err
-					continue
-				}
-
-				for relPath, content := range files {
-					filePath := filepath.Join(destPath, relPath)
-					if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil { //nolint:gosec // G301: skill subdir
-						lastErr = err
-						continue
-					}
-					if err := os.WriteFile(filePath, content, 0o644); err != nil { //nolint:gosec // G306: skill files
-						lastErr = err
-						continue
-					}
-				}
-				syncedCount++
-			} else {
-				if err := corefs.CopyDir(r.PhysicalPath, destPath); err != nil {
-					lastErr = fmt.Errorf("failed to copy skill %s: %w", skillName, err)
-				} else {
-					syncedCount++
-				}
+			if err := installSkill(r, destPath); err != nil {
+				lastErr = fmt.Errorf("failed to copy skill %s: %w", skillName, err)
+				continue
 			}
+			writeStoredManifest(destPath, manifest)
+			changedSet[skillName] = true
 		}
 	}
 
@@ -570,8 +576,39 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 		pruneSkillsDir(gitRoot, installedPerProvider, logger)
 	}
 
-	syncSkillsToWorktrees(gitRoot, resolved, installedPerProvider, prune, logger)
-	return syncedCount, lastErr
+	syncSkillsToWorktrees(gitRoot, resolved, manifests, installedPerProvider, prune, logger, changedSet)
+
+	changed := make([]string, 0, len(changedSet))
+	for name := range changedSet {
+		changed = append(changed, name)
+	}
+	sort.Strings(changed)
+	return changed, lastErr
+}
+
+// installSkill copies a resolved skill's source into destPath (which must not
+// already exist). Returns nil only if every file was written.
+func installSkill(r ResolvedSkill, destPath string) error {
+	if r.SourceType == SourceTypeBuiltin {
+		files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301: skills dir
+			return err
+		}
+		for relPath, content := range files {
+			filePath := filepath.Join(destPath, relPath)
+			if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil { //nolint:gosec // G301: skill subdir
+				return err
+			}
+			if err := os.WriteFile(filePath, content, 0o644); err != nil { //nolint:gosec // G306: skill files
+				return err
+			}
+		}
+		return nil
+	}
+	return corefs.CopyDir(r.PhysicalPath, destPath)
 }
 
 // syncSkillsToWorktrees syncs resolved skills to every worktree of the
@@ -579,9 +616,14 @@ func SyncConfiguredSkills(gitRoot string, resolved map[string]ResolvedSkill, pru
 // which unions the legacy workspace.WorktreeBases enumeration with the
 // per-worktree registry so anchored/XDG worktrees living under a different
 // sub-repo's base are reached.
-func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger) {
+//
+// manifests carries the precomputed per-skill source manifests (see
+// SyncConfiguredSkills); destinations whose stored manifest matches are
+// skipped. changedSet, when non-nil, records the names of skills that were
+// actually (re)copied into any worktree.
+func syncSkillsToWorktrees(gitRoot string, resolved map[string]ResolvedSkill, manifests map[string]string, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger, changedSet map[string]bool) {
 	for _, wtPath := range collectWorktreePaths(gitRoot) {
-		syncSkillsToOneWorktree(wtPath, resolved, installedPerProvider, prune, logger)
+		syncSkillsToOneWorktree(wtPath, resolved, manifests, installedPerProvider, prune, logger, changedSet)
 	}
 }
 
@@ -673,12 +715,20 @@ func ownerInEcosystem(owner, normRoot string) bool {
 }
 
 // syncSkillsToOneWorktree writes the resolved skills into a single worktree at
-// wtPath and optionally prunes unconfigured skills.
-func syncSkillsToOneWorktree(wtPath string, resolved map[string]ResolvedSkill, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger) {
+// wtPath and optionally prunes unconfigured skills. Destinations whose stored
+// .grove-sync-manifest matches the precomputed source manifest are skipped;
+// skills actually (re)copied are recorded in changedSet when it is non-nil.
+func syncSkillsToOneWorktree(wtPath string, resolved map[string]ResolvedSkill, manifests map[string]string, installedPerProvider map[string]map[string]bool, prune bool, logger *logging.PrettyLogger, changedSet map[string]bool) {
 	for skillName, r := range resolved {
+		manifest := manifests[skillName]
 		for _, provider := range r.Providers {
 			destBaseDir := GetSkillsDirectoryForWorktree(wtPath, provider)
 			destPath := filepath.Join(destBaseDir, skillName)
+
+			// Source unchanged since the last sync of this destination: no-op.
+			if manifest != "" && readStoredManifest(destPath) == manifest {
+				continue
+			}
 
 			if err := os.MkdirAll(destBaseDir, 0o755); err != nil { //nolint:gosec // G301: skills dir
 				continue
@@ -686,21 +736,12 @@ func syncSkillsToOneWorktree(wtPath string, resolved map[string]ResolvedSkill, i
 
 			_ = os.RemoveAll(destPath)
 
-			if r.SourceType == SourceTypeBuiltin {
-				files, err := readSkillFromFS(embeddedSkillsFS, r.RelPath)
-				if err != nil {
-					continue
-				}
-				if err := os.MkdirAll(destPath, 0o755); err != nil { //nolint:gosec // G301
-					continue
-				}
-				for relPath, content := range files {
-					filePath := filepath.Join(destPath, relPath)
-					_ = os.MkdirAll(filepath.Dir(filePath), 0o755) //nolint:gosec // G301
-					_ = os.WriteFile(filePath, content, 0o644)     //nolint:gosec // G306
-				}
-			} else {
-				_ = corefs.CopyDir(r.PhysicalPath, destPath)
+			if err := installSkill(r, destPath); err != nil {
+				continue
+			}
+			writeStoredManifest(destPath, manifest)
+			if changedSet != nil {
+				changedSet[skillName] = true
 			}
 		}
 	}

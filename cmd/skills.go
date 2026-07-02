@@ -433,9 +433,12 @@ func syncSingleWorkspace(svc *service.Service, node *workspace.WorkspaceNode, pr
 		return nil
 	}
 
-	if len(result.SyncedSkills) > 0 {
+	switch {
+	case len(result.SyncedSkills) > 0:
 		logger.Success(fmt.Sprintf("Synced %d skills for %s", len(result.SyncedSkills), node.Name))
-	} else {
+	case len(result.ResolvedSkills) > 0:
+		logger.InfoPretty(fmt.Sprintf("Skills already up to date for %s (%d configured)", node.Name, len(result.ResolvedSkills)))
+	default:
 		logger.InfoPretty(fmt.Sprintf("No skills to sync for %s", node.Name))
 	}
 	return nil
