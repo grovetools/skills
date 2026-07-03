@@ -71,14 +71,14 @@ Skills from other workspaces can be referenced as "workspace:skill-name" in grov
 			node, err := workspace.GetProjectByPath(cwd)
 			if err != nil && !allWorkspaces {
 				// Fall back to old behavior if not in a workspace
-				return listSkillsLegacy(svc, showPath)
+				return listSkillsLegacy(svc, showPath, jsonOutput)
 			}
 
 			// Use the new multi-source discovery
 			if svc == nil && node != nil {
 				svc, err = skills.NewServiceForNode(node)
 				if err != nil {
-					return listSkillsLegacy(nil, showPath)
+					return listSkillsLegacy(nil, showPath, jsonOutput)
 				}
 			}
 
@@ -118,6 +118,29 @@ Skills from other workspaces can be referenced as "workspace:skill-name" in grov
 				names = append(names, name)
 			}
 			sort.Strings(names)
+
+			// JSON output wins over both grouped and tabwriter output.
+			if jsonOutput {
+				type skillOut struct {
+					Name       string `json:"name"`
+					Configured bool   `json:"configured"`
+					Source     string `json:"source"` // src.Type: builtin|user|ecosystem|project
+					Path       string `json:"path"`
+				}
+				out := make([]skillOut, 0, len(names))
+				for _, name := range names {
+					src := sources[name]
+					out = append(out, skillOut{
+						Name:       name,
+						Configured: configuredMap[name],
+						Source:     string(src.Type),
+						Path:       src.Path,
+					})
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
 
 			// Grouped output mode
 			if grouped {
@@ -205,10 +228,31 @@ func listSkillsGrouped(svc *service.Service, sources map[string]skills.SkillSour
 }
 
 // listSkillsLegacy falls back to the old listing behavior when not in a workspace
-func listSkillsLegacy(svc *service.Service, showPath bool) error {
+func listSkillsLegacy(svc *service.Service, showPath bool, jsonOutput bool) error {
 	allSkills, sources, err := skills.ListSkillsWithService(svc)
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		// The legacy path only knows the skill name and its source type
+		// (no configured/path info), but must still emit a JSON array so
+		// `skills list --json` is JSON on every code path.
+		type skillOut struct {
+			Name       string `json:"name"`
+			Configured bool   `json:"configured"`
+			Source     string `json:"source"`
+			Path       string `json:"path"`
+		}
+		out := make([]skillOut, 0, len(allSkills))
+		for _, name := range allSkills {
+			out = append(out, skillOut{
+				Name:   name,
+				Source: sources[name],
+			})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
 	}
 	if len(allSkills) == 0 {
 		ulog.Info("No skills found").
