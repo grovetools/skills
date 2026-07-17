@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/grovetools/core/tui/components/help"
 	"github.com/grovetools/core/tui/embed"
 	"github.com/grovetools/core/tui/keymap"
@@ -139,6 +140,96 @@ func TestNarrowWidthRenderNoPanic(t *testing.T) {
 		out := m.View()
 		if out == "" {
 			t.Errorf("width %d: View() produced empty output", w)
+		}
+	}
+}
+
+// maxLineWidth returns the widest visible (ANSI-aware) line in a rendered
+// block, ignoring trailing whitespace which does not affect wrapping.
+func maxLineWidth(s string) int {
+	maxW := 0
+	for _, line := range strings.Split(s, "\n") {
+		if w := lipgloss.Width(strings.TrimRight(line, " ")); w > maxW {
+			maxW = w
+		}
+	}
+	return maxW
+}
+
+func lineCount(s string) int { return len(strings.Split(s, "\n")) }
+
+// TestDetailPaneTruncatesInsteadOfWrapping is the core regression guard for the
+// ticket: at narrow widths the detail pane must TRUNCATE long lines (with an
+// ellipsis) rather than soft-wrap them into many reflowed lines. We render the
+// pane once with a short preview line and once with a pathologically long
+// single line; truncation adds at most one output line, whereas the old
+// width-wrapping reflow ballooned a single line into ~a dozen.
+func TestDetailPaneTruncatesInsteadOfWrapping(t *testing.T) {
+	for _, w := range []int{40, 60} {
+		base := newTestModel(false)
+		base.loading = false
+		updated, _ := base.Update(tea.WindowSizeMsg{Width: w, Height: 24})
+		base = updated.(Model)
+		base.cursor = 0
+		contentWidth := base.viewport.Width - 2
+
+		short := base
+		short.cachedContent = "short preview line"
+		shortOut := short.renderSkillDetails(&short.nodes[0])
+
+		long := base
+		long.cachedContent = strings.Repeat("x", contentWidth*12) // would wrap to ~12 lines
+		longOut := long.renderSkillDetails(&long.nodes[0])
+
+		if delta := lineCount(longOut) - lineCount(shortOut); delta > 1 {
+			t.Errorf("width %d: a single long preview line added %d rendered lines (want <=1); it is wrapping, not truncating", w, delta)
+		}
+		if !strings.Contains(longOut, "…") {
+			t.Errorf("width %d: expected a truncation ellipsis in the detail pane", w)
+		}
+		if got := maxLineWidth(longOut); got > contentWidth {
+			t.Errorf("width %d: detail line width %d exceeds content width %d", w, got, contentWidth)
+		}
+	}
+}
+
+// TestNarrowWidthNoLineExceedsPanel renders the full browser (header + two
+// panes) and the footer at narrow widths with long content and asserts no
+// rendered line exceeds the panel width, so nothing overflows the terminal and
+// forces a hard wrap. This guards the header/footer/left-pane paths, which are
+// joined with JoinVertical and are not otherwise width-bounded.
+func TestNarrowWidthNoLineExceedsPanel(t *testing.T) {
+	longDesc := strings.Repeat("verylongtoken ", 60)
+	longPath := "/very/long/absolute/path/" + strings.Repeat("segment/", 40) + "SKILL.md"
+
+	for _, w := range []int{20, 40, 60} {
+		m := newTestModel(false)
+		m.loading = false
+		m.nodes[0].Description = longDesc
+		m.nodes[0].Path = longPath
+		m.nodes[0].Workspace = strings.Repeat("ws", 40)
+
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: 24})
+		m = updated.(Model)
+		m.cursor = 0
+		// Exercise the search footer path (long filter text) and a long preview.
+		m.searching = true
+		m.filterInput.SetValue(strings.Repeat("query", 20))
+		m.cachedContent = strings.Repeat("x", 500) + "\n" + longDesc
+		m.viewport.SetContent(m.renderSkillDetails(&m.nodes[0]))
+
+		if got := maxLineWidth(m.View()); got > w {
+			t.Errorf("width %d: View() has a line of width %d (must be <= %d)", w, got, w)
+		}
+		if got := maxLineWidth(m.FooterView()); got > w {
+			t.Errorf("width %d: FooterView() has a line of width %d (must be <= %d)", w, got, w)
+		}
+
+		// Group details path.
+		m.nodes = append([]DisplayNode{{Name: strings.Repeat("group", 20), IsGroup: true}}, m.nodes...)
+		m.viewport.SetContent(m.renderGroupDetails(&m.nodes[0]))
+		if got := maxLineWidth(m.View()); got > w {
+			t.Errorf("width %d: group View() has a line of width %d (must be <= %d)", w, got, w)
 		}
 	}
 }

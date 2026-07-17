@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	markdown "github.com/grovetools/core/tui/components/markdown"
 	"github.com/grovetools/core/tui/theme"
 	"github.com/grovetools/skills/pkg/skills"
@@ -108,7 +109,9 @@ func (m Model) renderHeader(width int) string {
 		gap = 0
 	}
 
-	header := title + strings.Repeat(" ", gap) + searchInfo
+	// Clip so a wide title + filter can't overflow the panel and wrap at
+	// narrow widths.
+	header := truncateToWidth(title+strings.Repeat(" ", gap)+searchInfo, width)
 	separator := m.theme.Muted.Render(strings.Repeat("─", width))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, separator)
@@ -271,6 +274,10 @@ func (m Model) renderRightPane(width int, height int) string {
 		return lipgloss.NewStyle().Width(maxInt(width, 1)).Render(content)
 	}
 
+	// Clip each viewport line to the inner width so an over-long line can't
+	// make the bordered style soft-wrap and blow out the box at narrow widths.
+	content = truncateLines(content, innerWidth)
+
 	// Apply rounded border with focus-dependent color
 	// Don't set Height - let content determine height, border adds to it
 	style := lipgloss.NewStyle().
@@ -292,9 +299,12 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 		contentWidth = 20
 	}
 
-	// Helper to wrap text
-	wrapText := func(text string) string {
-		return lipgloss.NewStyle().Width(contentWidth).Render(text)
+	// Helper to clip text to the content width. The skills TUI truncates
+	// rather than soft-wrapping, matching the nb/flow TUIs; the viewport
+	// scrolls vertically, so an over-long line is clipped with an ellipsis
+	// instead of reflowing and mangling the layout at narrow widths.
+	clipText := func(text string) string {
+		return truncateToWidth(text, contentWidth)
 	}
 
 	// Helper to render a single-line "Label: value" pair where the value is
@@ -400,7 +410,7 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	if skill.Description != "" {
 		sb.WriteString(sectionStyle.Render("Description"))
 		sb.WriteString("\n")
-		sb.WriteString(wrapText(skill.Description))
+		sb.WriteString(clipText(skill.Description))
 		sb.WriteString("\n\n")
 	}
 
@@ -415,7 +425,7 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 			colored := strings.ReplaceAll(line, "├─", lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("├─"))
 			colored = strings.ReplaceAll(colored, "└─", lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("└─"))
 			colored = strings.ReplaceAll(colored, "│", lipgloss.NewStyle().Foreground(m.theme.Colors.Green).Render("│"))
-			sb.WriteString(wrapText(colored))
+			sb.WriteString(clipText(colored))
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
@@ -446,14 +456,18 @@ func (m *Model) renderSkillDetails(skill *DisplayNode) string {
 	if m.cachedContent != "" {
 		sb.WriteString(sectionStyle.Render("Preview"))
 		sb.WriteString("\n")
-		// Render content and wrap to the detail pane width so long SKILL.md
-		// lines don't overflow the right pane at narrow widths.
+		// Render content and clip each line to the detail pane width so long
+		// SKILL.md lines are truncated (not soft-wrapped) at narrow widths,
+		// matching the nb/flow TUIs.
 		rendered := markdown.Render(m.cachedContent, m.theme)
-		sb.WriteString(markdown.WrapForViewport(rendered, contentWidth))
+		sb.WriteString(truncateLines(rendered, contentWidth))
 		sb.WriteString("\n")
 	}
 
-	return sb.String()
+	// Final safety pass: clip every line so nothing produced above (metadata,
+	// enabled-config paths, skill-sequence tree, produces) can exceed the
+	// content width and soft-wrap in the viewport.
+	return truncateLines(sb.String(), contentWidth)
 }
 
 // renderSkillSequenceTree recursively renders a skill sequence as a nested tree.
@@ -528,6 +542,13 @@ func (m *Model) loadSkillMetadata(name string) *skills.SkillMetadata {
 func (m *Model) renderGroupDetails(group *DisplayNode) string {
 	var sb strings.Builder
 
+	// Content width for the detail pane; lines are clipped to this so nothing
+	// soft-wraps at narrow widths (matches renderSkillDetails).
+	contentWidth := m.viewport.Width - 2
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
 	// Header
 	sb.WriteString(m.theme.Highlight.Render(group.Name))
 	sb.WriteString("\n\n")
@@ -599,7 +620,8 @@ func (m *Model) renderGroupDetails(group *DisplayNode) string {
 		}
 	}
 
-	return sb.String()
+	// Clip every line to the content width so nothing soft-wraps.
+	return truncateLines(sb.String(), contentWidth)
 }
 
 // FooterView returns the footer content for use by the pager's
@@ -645,7 +667,7 @@ func (m Model) FooterView() string {
 	// Search input if active
 	var searchLine string
 	if m.searching {
-		searchLine = "Search: " + m.filterInput.View()
+		searchLine = truncateToWidth("Search: "+m.filterInput.View(), maxWidth)
 	}
 
 	// Compose the status + help line, constrained to width
@@ -682,4 +704,33 @@ func truncateString(s string, maxWidth int) string {
 		}
 	}
 	return ""
+}
+
+// truncateToWidth clips a single (possibly ANSI-styled) line to width display
+// columns, appending an ellipsis when it overflows. Like nb/flow, the skills
+// TUI never soft-wraps — it truncates. ansi.Truncate is width- and escape-aware
+// so styled runs and wide runes are measured correctly and colour resets are
+// preserved.
+func truncateToWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
+}
+
+// truncateLines clips every line of a multi-line block to width columns so no
+// line can soft-wrap in its pane/viewport. Applied as the final pass over any
+// region fed to the right-pane viewport.
+func truncateLines(content string, width int) string {
+	if width <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = truncateToWidth(line, width)
+	}
+	return strings.Join(lines, "\n")
 }
