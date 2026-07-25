@@ -308,13 +308,34 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case key.Matches(msg, m.keys.Edit), key.Matches(msg, m.keys.Confirm):
+	case key.Matches(msg, m.keys.Confirm), key.Matches(msg, m.keys.Select):
+		// space / enter: dedicated open — the host pins SKILL.md to its own
+		// per-file treemux pane, exactly as enter does in nb and flow. The
+		// pane's rail label is qualified with the skill directory, so several
+		// open skills stay tellable apart instead of all reading "SKILL.md".
+		// Dedicated opens also skip the singleton editor's socket handshake,
+		// which is what stalls a quick open on a cold editor pane.
 		skill := m.SelectedSkill()
 		if skill != nil && skill.Source != skills.SourceTypeBuiltin {
 			if m.hosted {
 				skillPath := filepath.Join(skill.Path, "SKILL.md")
-				// Open the skill's SKILL.md as a path-deduped editor-<hash>
-				// window in the treemux rail (reuses a running nvim socket).
+				return m, func() tea.Msg {
+					return embed.EditRequestMsg{Path: skillPath, Dedicated: true}
+				}
+			}
+			return m, editSkillCmd(skill)
+		} else if skill != nil {
+			m.statusMsg = "Cannot edit builtin skills"
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Edit):
+		// e: quick open — route into the host's singleton "Editor" rail pane,
+		// replacing whatever buffer it shows. Matches nb/flow's e.
+		skill := m.SelectedSkill()
+		if skill != nil && skill.Source != skills.SourceTypeBuiltin {
+			if m.hosted {
+				skillPath := filepath.Join(skill.Path, "SKILL.md")
 				return m, func() tea.Msg {
 					return embed.EditRequestMsg{Path: skillPath}
 				}

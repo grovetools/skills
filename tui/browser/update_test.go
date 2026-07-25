@@ -86,8 +86,9 @@ func TestHostedEditOpensRailEditor(t *testing.T) {
 	m := newTestModel(true)
 	m.cursor = 0 // wsskill (non-builtin)
 
-	// enter / edit must emit a rail EditRequestMsg, NOT a SplitEditorRequestMsg.
-	for _, msgIn := range []tea.KeyMsg{keyRune('e'), {Type: tea.KeyEnter}} {
+	// enter / space / edit must emit a rail EditRequestMsg, NOT a
+	// SplitEditorRequestMsg (that is v's job).
+	for _, msgIn := range []tea.KeyMsg{keyRune('e'), keyRune(' '), {Type: tea.KeyEnter}} {
 		_, cmd := m.handleKeyMsg(msgIn)
 		out := msgFromCmd(cmd)
 		if _, ok := out.(embed.EditRequestMsg); !ok {
@@ -96,6 +97,39 @@ func TestHostedEditOpensRailEditor(t *testing.T) {
 		if _, ok := out.(embed.SplitEditorRequestMsg); ok {
 			t.Fatalf("key %v: edit should not emit SplitEditorRequestMsg", msgIn)
 		}
+	}
+}
+
+// TestHostedOpenTargets pins the three-way split the skills browser shares
+// with nb and flow: space/enter pin SKILL.md to its own treemux pane
+// (Dedicated), e replaces the buffer in the host's singleton Editor pane.
+func TestHostedOpenTargets(t *testing.T) {
+	cases := []struct {
+		name          string
+		key           tea.KeyMsg
+		wantDedicated bool
+	}{
+		{"space opens a dedicated pane", keyRune(' '), true},
+		{"enter opens a dedicated pane", tea.KeyMsg{Type: tea.KeyEnter}, true},
+		{"e quick-opens in the singleton editor", keyRune('e'), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(true)
+			m.cursor = 0 // wsskill (non-builtin)
+			_, cmd := m.handleKeyMsg(tc.key)
+			out := msgFromCmd(cmd)
+			req, ok := out.(embed.EditRequestMsg)
+			if !ok {
+				t.Fatalf("expected EditRequestMsg, got %T", out)
+			}
+			if req.Dedicated != tc.wantDedicated {
+				t.Errorf("Dedicated = %v, want %v", req.Dedicated, tc.wantDedicated)
+			}
+			if !strings.HasSuffix(req.Path, "/SKILL.md") {
+				t.Errorf("expected path ending in SKILL.md, got %q", req.Path)
+			}
+		})
 	}
 }
 

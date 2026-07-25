@@ -68,21 +68,32 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 }
 
 // ShortHelp returns a minimal set of keybindings to show inline in the footer.
-// Edit and TogglePreview are surfaced so the e/v actions are discoverable
-// without opening full help. Quit is listed first so it survives the footer's
-// truncate-from-end at narrow widths; the component prepends "Press ? for help".
+// Open (space, own pane), Edit and TogglePreview are surfaced so the three
+// open actions are discoverable without opening full help. Quit is listed
+// first so it survives the footer's truncate-from-end at narrow widths; the
+// component prepends "Press ? for help".
 func (k BrowserKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Quit, k.Edit, k.TogglePreview}
+	return []key.Binding{k.Quit, k.Open(), k.Edit, k.TogglePreview}
 }
 
 // FullHelp returns all keybindings organized by category.
 func (k BrowserKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
-		{k.Edit, k.TogglePreview, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.ToggleUser, k.Sync},
+		{k.Open(), k.Edit, k.TogglePreview, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.ToggleUser, k.Sync},
 		{k.Search, k.ClearSearch},
 		{k.SwitchView, k.Help, k.Quit},
 	}
+}
+
+// Open re-labels the shared Select binding (space) for help output: in the
+// skills browser there is no multi-select, so space opens SKILL.md in its own
+// treemux pane. Enter (Confirm) does the same; only one is advertised.
+func (k BrowserKeyMap) Open() key.Binding {
+	return key.NewBinding(
+		key.WithKeys(k.Select.Keys()...),
+		key.WithHelp("space", "open in pane"),
+	)
 }
 
 // Sections implements keymap.SectionedKeyMap for the help component.
@@ -90,6 +101,7 @@ func (k BrowserKeyMap) Sections() []keymap.Section {
 	return []keymap.Section{
 		k.Base.NavigationSection(),
 		keymap.NewSection(keymap.SectionActions,
+			k.Open(),
 			k.Edit,
 			k.Install,
 			k.Remove,
