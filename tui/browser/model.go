@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -98,6 +99,40 @@ type Model struct {
 
 	// hosted is true when running inside treemux; edit emits embed messages
 	hosted bool
+
+	// injectMode is the transient multi-select mode I toggles. Its only
+	// purpose is composing a batch of "/skill" lines for the agent CLI in the
+	// pane the user came from, so it is deliberately not persistent state:
+	// dispatching or cancelling drops the whole batch.
+	injectMode bool
+
+	// injectSelected holds the picked skill names in the order the user picked
+	// them, not in tree order. That order IS the order the host types the
+	// lines at the agent's prompt, and a batch reads very differently
+	// reversed ("/plan then /review" is not "/review then /plan"). Hence a
+	// slice rather than a set: deselecting removes in place, so re-selecting
+	// appends to the end and the user can rebuild the order by re-picking.
+	injectSelected []string
+
+	// injectPrompts maps a selected skill to the trailing instruction p
+	// attached to it. Absent or blank means the line stays a bare "/<name>".
+	injectPrompts map[string]string
+
+	// injectPromptEditing/injectPromptTarget/injectPromptInput drive the
+	// single-line prompt editor. A second textinput rather than a reuse of
+	// filterInput: the two are independently live (the batch survives a
+	// search, the search text survives a prompt edit) and sharing one would
+	// make either open clobber the other's buffer.
+	injectPromptEditing bool
+	injectPromptTarget  string
+	injectPromptInput   textinput.Model
+
+	// injectPending gates AgentInjectResultMsg. The host broadcasts the result
+	// to every panel it hosts, not just the emitter, so an ungated browser
+	// would report another panel's delivery — or worse, another panel's
+	// failure — in its own status line. Set on dispatch, cleared by the first
+	// result that arrives afterwards.
+	injectPending bool
 }
 
 // New creates a new skills browser model.
@@ -108,6 +143,10 @@ func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode
 	ti := textinput.New()
 	ti.Placeholder = "Search skills..."
 	ti.CharLimit = 64
+
+	pi := textinput.New()
+	pi.Placeholder = "trailing instruction..."
+	pi.CharLimit = 256
 
 	helpModel := help.New(keys)
 	helpModel.Title = "Skills Browser - Help"
@@ -125,6 +164,9 @@ func New(svc *service.Service, cfg *config.Config, node *workspace.WorkspaceNode
 		filterInput:   ti,
 		sequence:      keymap.NewSequenceState(),
 		hosted:        hosted,
+
+		injectPromptInput: pi,
+		injectPrompts:     make(map[string]string),
 	}
 }
 
@@ -477,6 +519,34 @@ func (m *Model) SelectedNode() *DisplayNode {
 	return &node
 }
 
+// injectIndexOf returns the position of a skill in the inject batch, or -1 if
+// it is not selected. Position, not a bare bool, because the batch is ordered
+// and removals have to splice rather than delete.
+func (m *Model) injectIndexOf(name string) int {
+	for i, sel := range m.injectSelected {
+		if sel == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// injectLines renders the batch as the lines the agent will see typed at its
+// prompt, in selection order. A skill with a trailing instruction becomes
+// "/name instruction"; without one it stays a bare "/name", which is what the
+// agent CLIs treat as "run this skill with no extra direction".
+func (m *Model) injectLines() []string {
+	lines := make([]string, 0, len(m.injectSelected))
+	for _, name := range m.injectSelected {
+		line := "/" + name
+		if prompt := strings.TrimSpace(m.injectPrompts[name]); prompt != "" {
+			line += " " + prompt
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 // GetGroupSkills returns all skills belonging to a group.
 func (m *Model) GetGroupSkills(groupName string) []DisplayNode {
 	var skills []DisplayNode
@@ -601,6 +671,14 @@ func (m *Model) getLeftPaneWidth() int {
 		if w > maxWidth {
 			maxWidth = w
 		}
+	}
+
+	// Inject mode prefixes every row with a 2-cell selection marker. Widen the
+	// estimate to match, so entering the mode doesn't start truncating names
+	// that fit a moment earlier — the tree visibly shrinking on I would read
+	// as a bug rather than as a mode change.
+	if m.injectMode {
+		maxWidth += 2
 	}
 
 	maxWidth += 4 // extra padding

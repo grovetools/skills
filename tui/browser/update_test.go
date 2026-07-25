@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/grovetools/core/tui/components/help"
@@ -22,12 +23,14 @@ func newTestModel(hosted bool) Model {
 	keys := skillskeymap.NewBrowserKeyMap(nil)
 	h := help.New(keys)
 	return Model{
-		keys:          keys,
-		help:          &h,
-		theme:         theme.DefaultTheme,
-		sequence:      keymap.NewSequenceState(),
-		hosted:        hosted,
-		showAllSkills: true, // so filteredNodes returns nodes verbatim
+		keys:              keys,
+		help:              &h,
+		theme:             theme.DefaultTheme,
+		sequence:          keymap.NewSequenceState(),
+		hosted:            hosted,
+		filterInput:       textinput.New(),
+		injectPromptInput: textinput.New(),
+		showAllSkills:     true, // so filteredNodes returns nodes verbatim
 		nodes: []DisplayNode{
 			{Name: "wsskill", Source: skills.SourceTypeProject, Path: "/tmp/wsskill"},
 			{Name: "builtinskill", Source: skills.SourceTypeBuiltin},
@@ -433,6 +436,381 @@ func TestNarrowWidthNoLineExceedsPanel(t *testing.T) {
 			t.Errorf("width %d: group View() has a line of width %d (must be <= %d)", w, got, w)
 		}
 	}
+}
+
+// enterInject presses I and asserts the browser actually entered inject mode,
+// returning the resulting model.
+func enterInject(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, _ := m.handleKeyMsg(keyRune('I'))
+	m = updated.(Model)
+	if !m.injectMode {
+		t.Fatal("setup: expected I to enter inject mode")
+	}
+	return m
+}
+
+// pressInject sends a key through handleKeyMsg and returns the new model plus
+// whatever message the resulting cmd produced.
+func pressInject(m Model, msg tea.KeyMsg) (Model, tea.Msg) {
+	updated, cmd := m.handleKeyMsg(msg)
+	return updated.(Model), msgFromCmd(cmd)
+}
+
+// TestInjectModeRequiresHost pins the two answers to I: hosted it opens the
+// mode, standalone it explains why it can't rather than stranding the user in
+// a mode whose enter key could never reach an agent.
+func TestInjectModeRequiresHost(t *testing.T) {
+	hostedModel := newTestModel(true)
+	updated, cmd := hostedModel.handleKeyMsg(keyRune('I'))
+	hostedModel = updated.(Model)
+	if !hostedModel.injectMode {
+		t.Error("hosted: I must enter inject mode")
+	}
+	if msg := msgFromCmd(cmd); msg != nil {
+		t.Errorf("hosted: entering inject mode must emit nothing, got %T", msg)
+	}
+
+	standalone := newTestModel(false)
+	updated, _ = standalone.handleKeyMsg(keyRune('I'))
+	standalone = updated.(Model)
+	if standalone.injectMode {
+		t.Error("standalone: I must not enter inject mode")
+	}
+	if !strings.Contains(standalone.statusMsg, "treemux-hosted") {
+		t.Errorf("standalone: expected an explanatory status, got %q", standalone.statusMsg)
+	}
+}
+
+// TestInjectSelectionOrderPreserved is the core selection guard: the batch is
+// an ordered list, not a set, because its order is the order the host types
+// the lines at the agent's prompt.
+func TestInjectSelectionOrderPreserved(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+
+	// Select wsskill2 (index 3) first, then wsskill (index 0).
+	m.cursor = 3
+	m, _ = pressInject(m, keyRune(' '))
+	m.cursor = 0
+	m, _ = pressInject(m, keyRune(' '))
+	if got, want := m.injectSelected, []string{"wsskill2", "wsskill"}; !equalStrings(got, want) {
+		t.Fatalf("selection = %v, want %v", got, want)
+	}
+
+	// Deselecting the first pick and re-selecting it must move it to the END:
+	// re-picking is how a user rebuilds the send order.
+	m.cursor = 3
+	m, _ = pressInject(m, keyRune(' '))
+	if got, want := m.injectSelected, []string{"wsskill"}; !equalStrings(got, want) {
+		t.Fatalf("after deselect: selection = %v, want %v", got, want)
+	}
+	m, _ = pressInject(m, keyRune(' '))
+	if got, want := m.injectSelected, []string{"wsskill", "wsskill2"}; !equalStrings(got, want) {
+		t.Fatalf("after reselect: selection = %v, want %v", got, want)
+	}
+}
+
+// TestInjectSelectionRefusesUnsendableRows covers the two rows that have no
+// "/name" behind them: builtins (embedded, never installed for the agent) and
+// group headers (display scaffolding).
+func TestInjectSelectionRefusesUnsendableRows(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cursor     int
+		wantStatus string
+	}{
+		{"builtin skill", 1, "builtin"},
+		{"group header", 2, "Groups"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := enterInject(t, newTestModel(true))
+			m.cursor = tc.cursor
+			m, _ = pressInject(m, keyRune(' '))
+			if len(m.injectSelected) != 0 {
+				t.Errorf("selection = %v, want empty", m.injectSelected)
+			}
+			if !strings.Contains(m.statusMsg, tc.wantStatus) {
+				t.Errorf("status = %q, want it to mention %q", m.statusMsg, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestSpaceOutsideInjectModeStillOpensPane is the regression guard for the
+// overload: space only means "select" inside the mode. Everywhere else it must
+// still pin SKILL.md to its own treemux pane.
+func TestSpaceOutsideInjectModeStillOpensPane(t *testing.T) {
+	m := newTestModel(true)
+	m.cursor = 0
+	_, out := pressInject(m, keyRune(' '))
+	req, ok := out.(embed.EditRequestMsg)
+	if !ok {
+		t.Fatalf("expected EditRequestMsg outside inject mode, got %T", out)
+	}
+	if !req.Dedicated {
+		t.Error("space outside inject mode must still request a dedicated pane")
+	}
+}
+
+// TestInjectNavigationStillWorks pins the overlay contract: keys the mode does
+// not claim fall through to the normal keymap, so the tree still navigates and
+// filters while a batch is being assembled.
+func TestInjectNavigationStillWorks(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+	m, _ = pressInject(m, keyRune('j'))
+	if m.cursor != 1 {
+		t.Errorf("j must still move the cursor in inject mode, cursor = %d", m.cursor)
+	}
+	m, _ = pressInject(m, keyRune('/'))
+	if !m.searching {
+		t.Error("/ must still open search in inject mode")
+	}
+	if !m.injectMode {
+		t.Error("navigation keys must not drop out of inject mode")
+	}
+}
+
+// TestInjectPromptAttachesInstruction walks the p flow end to end: open the
+// editor, type, commit, dispatch — and assert the line the host receives is
+// "/name instruction".
+func TestInjectPromptAttachesInstruction(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+	m.cursor = 0
+
+	// p selects implicitly and opens the editor.
+	m, _ = pressInject(m, keyRune('p'))
+	if !m.injectPromptEditing {
+		t.Fatal("p must open the prompt editor")
+	}
+	if m.injectPromptTarget != "wsskill" {
+		t.Errorf("prompt target = %q, want wsskill", m.injectPromptTarget)
+	}
+	if got, want := m.injectSelected, []string{"wsskill"}; !equalStrings(got, want) {
+		t.Errorf("p must select implicitly: selection = %v, want %v", got, want)
+	}
+
+	// The editor owns every key, so typing routes through Update.
+	for _, r := range "be brief" {
+		updated, _ := m.Update(keyRune(r))
+		m = updated.(Model)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.injectPromptEditing {
+		t.Fatal("Enter must close the prompt editor")
+	}
+	if !m.injectMode {
+		t.Fatal("committing a prompt must not leave inject mode")
+	}
+	if got := m.injectPrompts["wsskill"]; got != "be brief" {
+		t.Fatalf("stored prompt = %q, want %q", got, "be brief")
+	}
+
+	_, out := pressInject(m, tea.KeyMsg{Type: tea.KeyEnter})
+	req, ok := out.(embed.AgentInjectRequestMsg)
+	if !ok {
+		t.Fatalf("expected AgentInjectRequestMsg, got %T", out)
+	}
+	if got, want := req.Lines, []string{"/wsskill be brief"}; !equalStrings(got, want) {
+		t.Errorf("lines = %v, want %v", got, want)
+	}
+}
+
+// TestInjectPromptEscKeepsBatch pins the narrow scope of Esc inside the prompt
+// editor: it abandons the edit, not the mode and not the selection.
+func TestInjectPromptEscKeepsBatch(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+	m.cursor = 0
+	m, _ = pressInject(m, keyRune('p'))
+	for _, r := range "oops" {
+		updated, _ := m.Update(keyRune(r))
+		m = updated.(Model)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(Model)
+
+	if m.injectPromptEditing {
+		t.Error("Esc must close the prompt editor")
+	}
+	if !m.injectMode {
+		t.Error("Esc in the prompt editor must not leave inject mode")
+	}
+	if got, want := m.injectSelected, []string{"wsskill"}; !equalStrings(got, want) {
+		t.Errorf("selection = %v, want %v", got, want)
+	}
+	if got, ok := m.injectPrompts["wsskill"]; ok {
+		t.Errorf("cancelled edit must store nothing, got %q", got)
+	}
+}
+
+// TestInjectDispatch is the payload guard: enter sends one line per selected
+// skill, in selection order, asks for focus, and leaves the mode clean.
+func TestInjectDispatch(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+	m.cursor = 3
+	m, _ = pressInject(m, keyRune(' '))
+	m.cursor = 0
+	m, _ = pressInject(m, keyRune(' '))
+
+	m, out := pressInject(m, tea.KeyMsg{Type: tea.KeyEnter})
+	req, ok := out.(embed.AgentInjectRequestMsg)
+	if !ok {
+		t.Fatalf("expected AgentInjectRequestMsg, got %T", out)
+	}
+	if got, want := req.Lines, []string{"/wsskill2", "/wsskill"}; !equalStrings(got, want) {
+		t.Errorf("lines = %v, want %v (selection order)", got, want)
+	}
+	if !req.Focus {
+		t.Error("dispatch must ask the host to focus the agent pane")
+	}
+	if m.injectMode {
+		t.Error("dispatch must leave inject mode")
+	}
+	if len(m.injectSelected) != 0 || len(m.injectPrompts) != 0 {
+		t.Errorf("dispatch must clear the batch, got %v / %v", m.injectSelected, m.injectPrompts)
+	}
+	if !m.injectPending {
+		t.Error("dispatch must arm injectPending so the result is accepted")
+	}
+}
+
+// TestInjectDispatchWithEmptySelectionStays guards the impatient-enter case:
+// nothing is sent and the mode survives, so the user keeps the prompt edits
+// they were about to make.
+func TestInjectDispatchWithEmptySelectionStays(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+	m, out := pressInject(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if out != nil {
+		t.Fatalf("empty selection must emit nothing, got %T", out)
+	}
+	if !m.injectMode {
+		t.Error("empty enter must stay in inject mode")
+	}
+	if m.injectPending {
+		t.Error("empty enter must not arm injectPending")
+	}
+	if m.statusMsg == "" {
+		t.Error("empty enter should explain that nothing is selected")
+	}
+}
+
+// TestInjectCancelClearsBatch covers both cancel keys: esc and a second I.
+func TestInjectCancelClearsBatch(t *testing.T) {
+	for _, cancel := range []tea.KeyMsg{{Type: tea.KeyEscape}, keyRune('I')} {
+		m := enterInject(t, newTestModel(true))
+		m.cursor = 0
+		m, _ = pressInject(m, keyRune('p'))
+		updated, _ := m.Update(keyRune('x'))
+		m = updated.(Model)
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = updated.(Model)
+
+		m, out := pressInject(m, cancel)
+		if out != nil {
+			t.Errorf("%v: cancel must emit nothing, got %T", cancel, out)
+		}
+		if m.injectMode {
+			t.Errorf("%v: cancel must leave inject mode", cancel)
+		}
+		if len(m.injectSelected) != 0 {
+			t.Errorf("%v: cancel must clear the selection, got %v", cancel, m.injectSelected)
+		}
+		if len(m.injectPrompts) != 0 {
+			t.Errorf("%v: cancel must clear the prompts, got %v", cancel, m.injectPrompts)
+		}
+	}
+}
+
+// TestInjectResultIsGatedByPending is the broadcast guard: the host fans the
+// result out to every panel, so a browser that never dispatched must ignore it
+// rather than reporting a neighbour's failure as its own.
+func TestInjectResultIsGatedByPending(t *testing.T) {
+	failure := embed.AgentInjectResultMsg{Err: "no agent pane in scope"}
+
+	idle := newTestModel(true)
+	updated, _ := idle.Update(failure)
+	idle = updated.(Model)
+	if idle.errorMsg != "" {
+		t.Errorf("a browser with no pending request must ignore the result, got errorMsg %q", idle.errorMsg)
+	}
+
+	pending := newTestModel(true)
+	pending.injectPending = true
+	updated, _ = pending.Update(failure)
+	pending = updated.(Model)
+	if !strings.Contains(pending.errorMsg, "no agent pane in scope") {
+		t.Errorf("errorMsg = %q, want it to carry the host's error", pending.errorMsg)
+	}
+	if pending.injectPending {
+		t.Error("the first result must clear injectPending")
+	}
+
+	// A second, unrelated broadcast must no longer be adopted.
+	pending.errorMsg = ""
+	updated, _ = pending.Update(embed.AgentInjectResultMsg{Err: "someone else's problem"})
+	pending = updated.(Model)
+	if pending.errorMsg != "" {
+		t.Errorf("a post-result broadcast must be ignored, got %q", pending.errorMsg)
+	}
+}
+
+// TestInjectResultSuccessStatus pins the success wording, including the
+// pluralisation and the target suffix.
+func TestInjectResultSuccessStatus(t *testing.T) {
+	for _, tc := range []struct {
+		result embed.AgentInjectResultMsg
+		want   string
+	}{
+		{embed.AgentInjectResultMsg{Delivered: 1, Target: "claude"}, "Injected 1 skill → claude"},
+		{embed.AgentInjectResultMsg{Delivered: 2, Target: "claude"}, "Injected 2 skills → claude"},
+		{embed.AgentInjectResultMsg{Delivered: 2}, "Injected 2 skills"},
+	} {
+		m := newTestModel(true)
+		m.injectPending = true
+		updated, _ := m.Update(tc.result)
+		m = updated.(Model)
+		if m.statusMsg != tc.want {
+			t.Errorf("statusMsg = %q, want %q", m.statusMsg, tc.want)
+		}
+		if m.errorMsg != "" {
+			t.Errorf("a successful result must not set errorMsg, got %q", m.errorMsg)
+		}
+	}
+}
+
+// TestInjectModeRenderNoOverflow re-runs the narrow-width layout guard with the
+// mode's extra markers in play, since the selection marker and the prompt
+// editor both add width the base tests never see.
+func TestInjectModeRenderNoOverflow(t *testing.T) {
+	for _, w := range []int{20, 40, 80} {
+		m := newTestModel(true)
+		m.loading = false
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: 24})
+		m = updated.(Model)
+		m = enterInject(t, m)
+		m.cursor = 0
+		m, _ = pressInject(m, keyRune(' '))
+		m, _ = pressInject(m, keyRune('p'))
+
+		if got := maxLineWidth(m.View()); got > w {
+			t.Errorf("width %d: inject View() has a line of width %d (must be <= %d)", w, got, w)
+		}
+		if got := maxLineWidth(m.FooterView()); got > w {
+			t.Errorf("width %d: inject FooterView() has a line of width %d (must be <= %d)", w, got, w)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestGetLeftPaneWidthNeverExceedsPanel(t *testing.T) {

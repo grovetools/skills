@@ -13,6 +13,7 @@ type BrowserKeyMap struct {
 
 	// TUI-specific bindings
 	Install         key.Binding
+	Inject          key.Binding
 	Remove          key.Binding
 	Sync            key.Binding
 	ToggleAll       key.Binding
@@ -30,6 +31,13 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 		Install: key.NewBinding(
 			key.WithKeys("i"),
 			key.WithHelp("i", "install"),
+		),
+		// Capital I, deliberately not sharing lowercase i (Install): the two
+		// are unrelated actions and injecting into a live agent prompt is the
+		// one here with a visible side effect outside the TUI.
+		Inject: key.NewBinding(
+			key.WithKeys("I"),
+			key.WithHelp("I", "inject into agent"),
 		),
 		Remove: key.NewBinding(
 			key.WithKeys("x"),
@@ -80,7 +88,7 @@ func (k BrowserKeyMap) ShortHelp() []key.Binding {
 func (k BrowserKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Top, k.Bottom},
-		{k.Open(), k.Edit, k.TogglePreview, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.ToggleUser, k.Sync},
+		{k.Open(), k.Edit, k.Inject, k.TogglePreview, k.ToggleAll, k.ToggleProject, k.ToggleEcosystem, k.ToggleGlobal, k.ToggleUser, k.Sync},
 		{k.Search, k.ClearSearch},
 		{k.SwitchView, k.Help, k.Quit},
 	}
@@ -104,6 +112,7 @@ func (k BrowserKeyMap) Sections() []keymap.Section {
 			k.Open(),
 			k.Edit,
 			k.Install,
+			k.Inject,
 			k.Remove,
 			k.Sync,
 			k.ToggleAll,

@@ -1,9 +1,11 @@
 package browser
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
@@ -52,6 +54,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle search input mode
 		if m.searching {
 			return m.updateSearchMode(msg)
+		}
+
+		// The inject prompt editor owns every key while it is open. Checked
+		// here, alongside search and above the sequence matcher, so typing a
+		// literal "gg" or "G" into an instruction can't be swallowed as a
+		// navigation sequence.
+		if m.injectPromptEditing {
+			return m.updateInjectPromptMode(msg)
 		}
 
 		// Handle preview pane focus mode - route navigation keys to viewport
@@ -214,6 +224,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reload skills after toggle to refresh the view
 		return m, loadSkillsCmd(m.service, m.currentNode)
 
+	case embed.AgentInjectResultMsg:
+		// Broadcast, not addressed: the host fans this out to every panel it
+		// hosts because it has no cheap way to remember which one emitted the
+		// request. injectPending is that memory, kept on our side — without it
+		// a browser that never pressed enter would happily print (or redden
+		// its status line with) some other panel's outcome.
+		if !m.injectPending {
+			return m, nil
+		}
+		m.injectPending = false
+		if msg.Err != "" {
+			m.errorMsg = "Inject failed: " + msg.Err
+			return m, nil
+		}
+		m.errorMsg = ""
+		m.statusMsg = injectResultStatus(msg)
+		return m, nil
+
 	case embed.SplitEditorClosedMsg:
 		// A plain tuimux host reports a split-editor exit this way
 		// (Model.CleanupSplitEditor calls Update on the origin panel with it).
@@ -251,6 +279,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKeyMsg handles keyboard input when not in search mode.
 func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	nodes := m.filteredNodes()
+
+	// Inject mode is an overlay, not a separate screen: it claims space, p,
+	// enter and esc and lets everything else fall through to the switch below,
+	// so j/k, gg/G, /, C-l and A keep working while the user assembles a
+	// batch. Falling through also keeps every cursor move routed through
+	// selectionChanged(), which is what an open sticky preview rides on.
+	if m.injectMode {
+		if model, cmd, handled := m.handleInjectKey(msg); handled {
+			return model, cmd
+		}
+	}
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -317,6 +356,17 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Install):
 		// TODO: Implement install dialog
 		m.statusMsg = "Install not yet implemented"
+		return m, nil
+
+	case key.Matches(msg, m.keys.Inject):
+		// Only a host can resolve "the agent pane the user came from" and type
+		// into it; standalone there is no such pane, and entering a mode whose
+		// enter key could never do anything would just strand the user.
+		if !m.hosted {
+			m.statusMsg = "Inject requires the treemux-hosted skills panel"
+			return m, nil
+		}
+		m.enterInjectMode()
 		return m, nil
 
 	case key.Matches(msg, m.keys.SwitchView), msg.Type == tea.KeyShiftTab:
@@ -514,6 +564,224 @@ func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Filtering re-seats the cursor on a different skill with every keystroke,
 	// so the preview tracks the search results the same way it tracks j/k.
 	return m, tea.Batch(cmd, m.selectionChanged())
+}
+
+// handleInjectKey applies the inject-mode overlay to one key press. The bool
+// reports whether the mode claimed the key; false hands it back to the normal
+// browser keymap untouched, which is how navigation and search keep working
+// inside the mode.
+func (m Model) handleInjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	switch {
+	case key.Matches(msg, m.keys.Inject), key.Matches(msg, m.keys.Back):
+		// I is a toggle and esc is the universal escape hatch; both drop the
+		// batch rather than merely hiding it, because a half-built selection
+		// that survived invisibly would be dispatched by surprise the next
+		// time the user opened the mode.
+		m.exitInjectMode()
+		m.statusMsg = "Inject cancelled"
+		return m, nil, true
+
+	case key.Matches(msg, m.keys.Select):
+		// space is overloaded ONLY inside the mode. Outside it, space is the
+		// dedicated SKILL.md open the browser shares with nb and flow, and
+		// claiming it globally would cost the tree its most-used key for a
+		// mode most sessions never enter. Inside the mode there is nothing to
+		// open — the user is building a list — so the most reachable key gets
+		// the thing the mode exists for.
+		return m.toggleInjectSelection(), nil, true
+
+	case msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'p':
+		return m.beginInjectPrompt(), nil, true
+
+	case key.Matches(msg, m.keys.Confirm):
+		model, cmd := m.dispatchInject()
+		return model, cmd, true
+	}
+
+	return m, nil, false
+}
+
+// enterInjectMode starts a fresh batch. Always fresh: leftovers from a
+// previous, cancelled round would be invisible until the user scrolled onto
+// the row that still carried a checkmark.
+func (m *Model) enterInjectMode() {
+	m.injectMode = true
+	m.injectSelected = nil
+	m.injectPrompts = make(map[string]string)
+	m.injectPromptEditing = false
+	m.injectPromptTarget = ""
+	m.errorMsg = ""
+	m.statusMsg = "Inject: space to select, p for a prompt, enter to send"
+}
+
+// exitInjectMode leaves the mode and drops the batch. Shared by cancel and by
+// a successful dispatch, since neither leaves anything worth keeping: the
+// lines have already been handed to the command by the time this runs.
+func (m *Model) exitInjectMode() {
+	m.injectMode = false
+	m.injectSelected = nil
+	m.injectPrompts = nil
+	m.injectPromptEditing = false
+	m.injectPromptTarget = ""
+	m.injectPromptInput.Blur()
+	m.injectPromptInput.SetValue("")
+}
+
+// toggleInjectSelection adds or removes the skill under the cursor.
+func (m Model) toggleInjectSelection() Model {
+	node := m.SelectedNode()
+	if node == nil {
+		return m
+	}
+	if node.IsGroup {
+		// Group rows are display scaffolding with no skill name behind them;
+		// there is no "/group" for the agent to run.
+		m.statusMsg = "Groups cannot be injected — select individual skills"
+		return m
+	}
+	if node.Source == skills.SourceTypeBuiltin {
+		// Builtin skills live inside the binary and are never materialised
+		// into the agent's skill directory, so the agent has no slash command
+		// to answer "/name" with. Same reason v and e refuse them.
+		m.statusMsg = "Cannot inject builtin skills"
+		return m
+	}
+
+	// Rebuild rather than append/splice in place: bubbletea copies the Model
+	// on every message, so several copies share one backing array and an
+	// in-place edit would rewrite a slice another copy still reads.
+	if i := m.injectIndexOf(node.Name); i >= 0 {
+		next := make([]string, 0, len(m.injectSelected)-1)
+		next = append(next, m.injectSelected[:i]...)
+		next = append(next, m.injectSelected[i+1:]...)
+		m.injectSelected = next
+		delete(m.injectPrompts, node.Name)
+		m.statusMsg = fmt.Sprintf("Deselected %s (%d selected)", node.Name, len(m.injectSelected))
+		return m
+	}
+
+	next := make([]string, 0, len(m.injectSelected)+1)
+	next = append(next, m.injectSelected...)
+	m.injectSelected = append(next, node.Name)
+	m.statusMsg = fmt.Sprintf("Selected %s (%d selected)", node.Name, len(m.injectSelected))
+	return m
+}
+
+// beginInjectPrompt opens the single-line editor for the skill under the
+// cursor, pre-filled with whatever instruction it already carries so p acts as
+// "edit" the second time as well as "add" the first.
+func (m Model) beginInjectPrompt() Model {
+	node := m.SelectedNode()
+	if node == nil {
+		return m
+	}
+	if node.IsGroup {
+		m.statusMsg = "Groups cannot be injected — select individual skills"
+		return m
+	}
+	if node.Source == skills.SourceTypeBuiltin {
+		m.statusMsg = "Cannot inject builtin skills"
+		return m
+	}
+
+	// Writing a prompt for a skill is an unambiguous statement that it belongs
+	// in the batch, so p selects implicitly. Requiring space first would make
+	// p appear to do nothing on the row the user has plainly just chosen.
+	if m.injectIndexOf(node.Name) < 0 {
+		next := make([]string, 0, len(m.injectSelected)+1)
+		next = append(next, m.injectSelected...)
+		m.injectSelected = append(next, node.Name)
+	}
+
+	m.injectPromptEditing = true
+	m.injectPromptTarget = node.Name
+	m.injectPromptInput.SetValue(m.injectPrompts[node.Name])
+	m.injectPromptInput.CursorEnd()
+	m.injectPromptInput.Focus()
+	return m
+}
+
+// updateInjectPromptMode handles input while the prompt editor owns the keys.
+func (m Model) updateInjectPromptMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		if m.injectPrompts == nil {
+			m.injectPrompts = make(map[string]string)
+		}
+		// Store trimmed, and store nothing at all for a blank edit: a stray
+		// space would otherwise turn "/name" into "/name " and, worse, light
+		// up the row's ✎ marker for an instruction that isn't there.
+		if value := strings.TrimSpace(m.injectPromptInput.Value()); value != "" {
+			m.injectPrompts[m.injectPromptTarget] = value
+		} else {
+			delete(m.injectPrompts, m.injectPromptTarget)
+		}
+		m.closeInjectPrompt()
+		return m, nil
+
+	case tea.KeyEscape:
+		// Esc abandons the edit only — the mode and the batch survive. A
+		// mistyped instruction should cost one keystroke, not the selection
+		// the user just spent several keystrokes assembling.
+		m.closeInjectPrompt()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.injectPromptInput, cmd = m.injectPromptInput.Update(msg)
+	return m, cmd
+}
+
+// closeInjectPrompt dismisses the prompt editor without touching the batch.
+func (m *Model) closeInjectPrompt() {
+	m.injectPromptEditing = false
+	m.injectPromptTarget = ""
+	m.injectPromptInput.Blur()
+	m.injectPromptInput.SetValue("")
+}
+
+// dispatchInject hands the batch to the host and leaves the mode.
+func (m Model) dispatchInject() (tea.Model, tea.Cmd) {
+	lines := m.injectLines()
+	if len(lines) == 0 {
+		// Stay in the mode: an empty enter is far more likely to be an
+		// impatient user than a request to leave, and leaving would throw away
+		// the prompt edits they are about to make.
+		m.statusMsg = "Select at least one skill to inject (space)"
+		return m, nil
+	}
+
+	// Read the lines out before exitInjectMode clears the batch.
+	m.exitInjectMode()
+	m.injectPending = true
+	m.errorMsg = ""
+	m.statusMsg = fmt.Sprintf("Injecting %d %s...", len(lines), pluralSkills(len(lines)))
+	return m, func() tea.Msg {
+		return embed.AgentInjectRequestMsg{Lines: lines, Focus: true}
+	}
+}
+
+// injectResultStatus formats the host's delivery report for the status line.
+func injectResultStatus(msg embed.AgentInjectResultMsg) string {
+	status := fmt.Sprintf("Injected %d %s", msg.Delivered, pluralSkills(msg.Delivered))
+	if msg.Target != "" {
+		status += " → " + msg.Target
+	}
+	// A capped batch is a partial success the host reports separately. Say so:
+	// the batch is gone from the tree by now, so a user who is not told some
+	// picks were dropped has no way left to notice.
+	if msg.Truncated > 0 {
+		status += fmt.Sprintf(" (%d dropped — host caps one batch)", msg.Truncated)
+	}
+	return status
+}
+
+// pluralSkills picks the noun for a count of injected skills.
+func pluralSkills(n int) string {
+	if n == 1 {
+		return "skill"
+	}
+	return "skills"
 }
 
 // selectionChanged re-renders the detail viewport for the new selection and,

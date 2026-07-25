@@ -91,6 +91,13 @@ func (m Model) renderHeader(width int) string {
 		modeIndicator = m.theme.Highlight.Render(" [All Skills]")
 	}
 
+	// Inject mode rebinds space and enter to something with an effect outside
+	// this panel, so it gets a loud, always-visible banner carrying the batch
+	// size — the checkmarks alone scroll out of view.
+	if m.injectMode {
+		modeIndicator += m.theme.Highlight.Render(fmt.Sprintf(" [INJECT — %d selected]", len(m.injectSelected)))
+	}
+
 	// Use Bold style for title with cyan color for consistency
 	title := lipgloss.NewStyle().
 		Foreground(m.theme.Colors.Cyan).
@@ -159,6 +166,22 @@ func (m Model) renderLeftPane(width int, height int) string {
 func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string {
 	var line string
 	var indicator string
+
+	// Inject mode prefixes every row — group rows included, with blank cells —
+	// with a 2-cell selection marker. Groups get the blanks rather than being
+	// skipped so the tree prefixes underneath stay column-aligned with their
+	// header; a ragged tree is a worse read than two wasted columns.
+	var mark string
+	if m.injectMode {
+		mark = "  "
+		if !node.IsGroup && m.injectIndexOf(node.Name) >= 0 {
+			// A literal check rather than theme.IconStatusCompleted: this
+			// marker must be exactly the 2 cells getLeftPaneWidth reserves for
+			// it, and the themed icon set varies in width between its nerd and
+			// ascii variants.
+			mark = m.theme.Success.Render("✓ ")
+		}
+	}
 
 	if node.IsGroup {
 		// Group header - cyan and bold
@@ -237,10 +260,19 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 			indicator = "  "
 			line = prefix + skillName + tags
 		}
+
+		// A skill carrying a trailing instruction gets a muted pencil, so the
+		// batch is fully readable from the tree: the checkmarks say what will
+		// be sent and this says which lines are more than a bare "/name".
+		if m.injectMode {
+			if prompt := strings.TrimSpace(m.injectPrompts[node.Name]); prompt != "" {
+				line += m.theme.Muted.Render(" ✎")
+			}
+		}
 	}
 
 	// Truncate if needed
-	fullLine := indicator + line
+	fullLine := mark + indicator + line
 	if lipgloss.Width(fullLine) > maxWidth {
 		// Simple truncation
 		fullLine = truncateString(fullLine, maxWidth-1) + "…"
@@ -658,16 +690,25 @@ func (m Model) FooterView() string {
 	var helpText string
 	if m.searching {
 		helpText = m.theme.Muted.Render("Type to search • Enter to confirm • Esc to cancel")
+	} else if m.injectPromptEditing {
+		helpText = m.theme.Muted.Render("Type an instruction • Enter to attach • Esc to cancel")
+	} else if m.injectMode {
+		helpText = m.theme.Muted.Render("space select • p prompt • enter send • esc cancel")
 	} else if m.previewFocused {
 		helpText = m.theme.Muted.Render("Tab to switch • j/k C-d/u gg/G to scroll")
 	} else {
 		helpText = m.help.View()
 	}
 
-	// Search input if active
+	// Search input if active. The inject prompt editor reuses the same extra
+	// footer line — the two are mutually exclusive (search input is dismissed
+	// before inject mode can claim a key) and a single line keeps the body
+	// height stable whichever editor is open.
 	var searchLine string
 	if m.searching {
 		searchLine = truncateToWidth("Search: "+m.filterInput.View(), maxWidth)
+	} else if m.injectPromptEditing {
+		searchLine = truncateToWidth("Prompt for "+m.injectPromptTarget+": "+m.injectPromptInput.View(), maxWidth)
 	}
 
 	// Compose the status + help line, constrained to width
