@@ -12,6 +12,7 @@ import (
 	"github.com/grovetools/core/tui/theme"
 	skillskeymap "github.com/grovetools/skills/pkg/keymap"
 	"github.com/grovetools/skills/pkg/skills"
+	tuimuxmsg "github.com/grovetools/tuimux/messages"
 )
 
 // newTestModel builds a minimal browser Model suitable for exercising the
@@ -30,6 +31,8 @@ func newTestModel(hosted bool) Model {
 		nodes: []DisplayNode{
 			{Name: "wsskill", Source: skills.SourceTypeProject, Path: "/tmp/wsskill"},
 			{Name: "builtinskill", Source: skills.SourceTypeBuiltin},
+			{Name: "othergroup", IsGroup: true},
+			{Name: "wsskill2", Source: skills.SourceTypeProject, Path: "/tmp/wsskill2"},
 		},
 	}
 }
@@ -64,8 +67,9 @@ func TestHostedPreviewToggle(t *testing.T) {
 	if open.Focus {
 		t.Error("expected Focus to be false so the tree keeps focus")
 	}
-	if open.Ratio != 0.35 {
-		t.Errorf("expected Ratio 0.35, got %v", open.Ratio)
+	// An even split: the tree narrows itself to fit, the editor cannot.
+	if open.Ratio != 0.5 {
+		t.Errorf("expected Ratio 0.5, got %v", open.Ratio)
 	}
 	if !strings.HasSuffix(open.Path, "/SKILL.md") {
 		t.Errorf("expected path ending in SKILL.md, got %q", open.Path)
@@ -147,6 +151,169 @@ func TestBuiltinSkillCannotEditOrPreview(t *testing.T) {
 		}
 		if m.previewOpen {
 			t.Fatalf("key %v: builtin skill must not open preview", key)
+		}
+	}
+}
+
+// openPreview presses v on the currently selected row and asserts the split
+// actually opened, returning the resulting model.
+func openPreview(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.handleKeyMsg(keyRune('v'))
+	m = updated.(Model)
+	if !m.previewOpen {
+		t.Fatal("setup: expected v to open the preview")
+	}
+	if _, ok := msgFromCmd(cmd).(embed.SplitEditorRequestMsg); !ok {
+		t.Fatalf("setup: expected SplitEditorRequestMsg from v, got %T", msgFromCmd(cmd))
+	}
+	return m
+}
+
+// TestStickyPreviewFollowsCursor is the core sticky-navigation guard: while the
+// preview split is open, moving onto another previewable skill must re-emit a
+// SplitEditorRequestMsg for THAT skill with Ratio 0, so the host retargets the
+// existing split in place instead of respawning it at a fresh geometry.
+func TestStickyPreviewFollowsCursor(t *testing.T) {
+	m := newTestModel(true)
+	m.cursor = 0 // wsskill
+	m = openPreview(t, m)
+
+	// Jump to the other previewable skill (index 3); index 1 is a builtin and
+	// index 2 is a group header, both covered separately below.
+	m.cursor = 2
+	updated, cmd := m.handleKeyMsg(keyRune('j'))
+	m = updated.(Model)
+	if !m.previewOpen {
+		t.Error("cursor movement must not clear previewOpen — the split is still up")
+	}
+	req, ok := msgFromCmd(cmd).(embed.SplitEditorRequestMsg)
+	if !ok {
+		t.Fatalf("expected a sticky SplitEditorRequestMsg on cursor move, got %T", msgFromCmd(cmd))
+	}
+	if req.Ratio != 0 {
+		t.Errorf("sticky re-emit must send Ratio 0 (preserve geometry), got %v", req.Ratio)
+	}
+	if req.Focus {
+		t.Error("sticky re-emit must not steal focus from the tree")
+	}
+	if !strings.HasPrefix(req.Path, "/tmp/wsskill2/") {
+		t.Errorf("preview should have followed to wsskill2, got %q", req.Path)
+	}
+}
+
+// TestStickyPreviewSilentWhenClosed guards the other half: with no preview
+// open, cursor movement must stay silent rather than opening one.
+func TestStickyPreviewSilentWhenClosed(t *testing.T) {
+	m := newTestModel(true)
+	m.cursor = 0
+	_, cmd := m.handleKeyMsg(keyRune('j'))
+	if msg := msgFromCmd(cmd); msg != nil {
+		t.Fatalf("cursor movement with no preview open must emit nothing, got %T", msg)
+	}
+}
+
+// TestStickyPreviewParksOnUnpreviewableRows pins the deliberate choice for rows
+// with no SKILL.md behind them: the split stays on the last previewable skill
+// rather than closing, matching what v itself does on a builtin.
+func TestStickyPreviewParksOnUnpreviewableRows(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cursor int
+	}{
+		{"builtin skill", 1},
+		{"group header", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(true)
+			m.cursor = 0
+			m = openPreview(t, m)
+
+			m.cursor = tc.cursor - 1
+			updated, cmd := m.handleKeyMsg(keyRune('j'))
+			m = updated.(Model)
+			if m.cursor != tc.cursor {
+				t.Fatalf("setup: cursor = %d, want %d", m.cursor, tc.cursor)
+			}
+			if msg := msgFromCmd(cmd); msg != nil {
+				t.Errorf("expected no message for an unpreviewable row, got %T", msg)
+			}
+			if !m.previewOpen {
+				t.Error("preview must stay open (parked) on an unpreviewable row")
+			}
+			if !strings.HasPrefix(m.previewPath, "/tmp/wsskill/") {
+				t.Errorf("preview should still be parked on wsskill, got %q", m.previewPath)
+			}
+
+			// v here refuses without touching the open split, so the toggle
+			// must still read "open" and close on the next v over a skill.
+			updated, cmd = m.handleKeyMsg(keyRune('v'))
+			m = updated.(Model)
+			if !m.previewOpen {
+				t.Error("v on an unpreviewable row must not clear previewOpen")
+			}
+			if msg := msgFromCmd(cmd); msg != nil {
+				t.Errorf("v on an unpreviewable row must emit nothing, got %T", msg)
+			}
+		})
+	}
+}
+
+// TestStickyPreviewSkipsRedundantReemit ensures a cursor move that lands back
+// on the skill already in the split does not churn the host with a request.
+func TestStickyPreviewSkipsRedundantReemit(t *testing.T) {
+	m := newTestModel(true)
+	m.cursor = 0
+	m = openPreview(t, m)
+
+	// k at the top of the list is a no-op move; so is re-selecting the same row.
+	_, cmd := m.handleKeyMsg(keyRune('k'))
+	if msg := msgFromCmd(cmd); msg != nil {
+		t.Errorf("no-op cursor move must not re-emit, got %T", msg)
+	}
+
+	// A selection re-render that lands on the skill already in the split
+	// (a list reload that didn't move the cursor) is a no-op for the host.
+	if cmd := m.selectionChanged(); cmd != nil {
+		t.Errorf("re-selecting the skill already previewed must not re-emit, got %T", msgFromCmd(cmd))
+	}
+}
+
+// TestHostClosedSplitResyncsToggle covers the state-honesty case: when the user
+// closes the preview from the host side (leader-x, or the editor exiting),
+// treemux notifies the origin panel with DetailPaneClosedMsg. If skills ignored
+// it, previewOpen would stay true and the next v would emit a close for a pane
+// that no longer exists instead of reopening.
+func TestHostClosedSplitResyncsToggle(t *testing.T) {
+	for _, closeMsg := range []tea.Msg{
+		tuimuxmsg.DetailPaneClosedMsg{DetailPanelID: "split-editor-1-SKILL.md", OriginPanelID: "skills-1"},
+		embed.SplitEditorClosedMsg{Path: "/tmp/wsskill/SKILL.md"},
+	} {
+		m := newTestModel(true)
+		m.cursor = 0
+		m = openPreview(t, m)
+
+		updated, _ := m.Update(closeMsg)
+		m = updated.(Model)
+		if m.previewOpen {
+			t.Fatalf("%T: previewOpen must be false once the host closed the split", closeMsg)
+		}
+		if m.previewPath != "" {
+			t.Errorf("%T: previewPath must be cleared, got %q", closeMsg, m.previewPath)
+		}
+
+		// Sticky navigation must go quiet, and v must OPEN rather than close.
+		_, cmd := m.handleKeyMsg(keyRune('j'))
+		if msg := msgFromCmd(cmd); msg != nil {
+			t.Errorf("%T: sticky nav must stop after the split is gone, got %T", closeMsg, msg)
+		}
+		updated, cmd = m.handleKeyMsg(keyRune('v'))
+		m = updated.(Model)
+		if !m.previewOpen {
+			t.Errorf("%T: v must reopen after a host-side close", closeMsg)
+		}
+		if _, ok := msgFromCmd(cmd).(embed.SplitEditorRequestMsg); !ok {
+			t.Errorf("%T: v must emit an open request, got %T", closeMsg, msgFromCmd(cmd))
 		}
 	}
 }

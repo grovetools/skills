@@ -13,11 +13,28 @@ import (
 	"github.com/grovetools/core/tui/keymap"
 	"github.com/grovetools/skills/pkg/service"
 	"github.com/grovetools/skills/pkg/skills"
+	tuimuxmsg "github.com/grovetools/tuimux/messages"
 )
 
 // noWorkspaceMsg explains why grove.toml toggle keys are disabled when the
 // browser was opened without a resolvable grove workspace context.
 const noWorkspaceMsg = "No workspace context — open the browser from a grove workspace to toggle skills"
+
+// defaultPreviewSplitRatio is the fraction of the BSP split the skills tree
+// keeps the first time v promotes a preview. Even 50/50 rather than a sliver
+// derived from the tree's content width: the tree pane already narrows itself
+// to fit whatever it gets (getLeftPaneWidth caps the tree at 40% of the panel
+// and reserves a floor for the detail column, and the detail pane truncates
+// long lines instead of reflowing them — a layout regression-tested down to 20
+// columns), whereas the editor on the other side has real minimum-width
+// content and used to be squeezed into the leftovers. This mirrors flow's
+// defaultBSPJobPaneRatio for the same reason.
+//
+// Only the FIRST time: the host remembers the direction and ratio the user
+// sets afterwards, per origin panel, and replays it on the next open. So this
+// value must not be re-asserted on later requests — sticky-navigation re-emits
+// send Ratio 0 instead, which means "preserve the existing split geometry".
+const defaultPreviewSplitRatio = 0.5
 
 // Update handles messages and updates the model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -146,21 +163,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			m.errorMsg = msg.err.Error()
-		} else {
-			m.nodes = msg.nodes
-			if len(m.nodes) > 0 {
-				m.statusMsg = ""
-				// Update viewport width now that we know the left pane width
-				if m.ready {
-					m.viewport.Width = m.rightPaneWidth()
-				}
-				// Update viewport with first skill
-				m.updateViewportContent()
-			} else {
-				m.statusMsg = "No skills found"
-			}
+			return m, nil
 		}
-		return m, nil
+		m.nodes = msg.nodes
+		if len(m.nodes) == 0 {
+			m.statusMsg = "No skills found"
+			return m, nil
+		}
+		m.statusMsg = ""
+		// Update viewport width now that we know the left pane width
+		if m.ready {
+			m.viewport.Width = m.rightPaneWidth()
+		}
+		// A reload rebuilds the whole node list (sync, remove, toggle, edit),
+		// so the row under the cursor may now be a different skill — route
+		// through selectionChanged so an open preview follows it too.
+		return m, m.selectionChanged()
 
 	case syncCompleteMsg:
 		if msg.err != nil {
@@ -197,10 +215,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadSkillsCmd(m.service, m.currentNode)
 
 	case embed.SplitEditorClosedMsg:
-		// The hosted preview split was closed (possibly from nvim's side);
-		// re-sync the toggle so the next v reopens it. Harmless if the host
-		// panel never forwards this message to the inner model.
+		// A plain tuimux host reports a split-editor exit this way
+		// (Model.CleanupSplitEditor calls Update on the origin panel with it).
 		m.previewOpen = false
+		m.previewPath = ""
+		return m, nil
+
+	case tuimuxmsg.DetailPaneClosedMsg:
+		// treemux — the host skills actually runs in — takes the other road:
+		// both leader-x on the preview and the editor exiting collapse the
+		// pane through tuimux.ClosePane, which notifies the origin with
+		// DetailPaneClosedMsg. SplitEditorClosedMsg above never arrives there,
+		// so without this case previewOpen stayed true after the user closed
+		// the split themselves: v inverted (it emitted a close for a pane that
+		// no longer exists) and the next cursor move re-emitted a preview
+		// request that respawned the split unasked.
+		//
+		// A detail-slot *swap* must not reach here. The host closes the
+		// outgoing pane with ClosePaneForSwap precisely so this message keeps
+		// meaning "your detail pane is gone" and nothing else; if that ever
+		// regresses, skills stops driving a preview it still owns.
+		m.previewOpen = false
+		m.previewPath = ""
 		return m, nil
 	}
 
@@ -227,14 +263,14 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Up):
 		if m.cursor > 0 {
 			m.cursor--
-			m.updateViewportContent()
+			return m, m.selectionChanged()
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Down):
 		if m.cursor < len(nodes)-1 {
 			m.cursor++
-			m.updateViewportContent()
+			return m, m.selectionChanged()
 		}
 		return m, nil
 
@@ -243,8 +279,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.updateViewportContent()
-		return m, nil
+		return m, m.selectionChanged()
 
 	case key.Matches(msg, m.keys.PageDown):
 		m.cursor += 10
@@ -254,8 +289,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.updateViewportContent()
-		return m, nil
+		return m, m.selectionChanged()
 
 	case key.Matches(msg, m.keys.Search):
 		m.searching = true
@@ -266,8 +300,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterText = ""
 		m.filterInput.SetValue("")
 		m.cursor = 0
-		m.updateViewportContent()
-		return m, nil
+		return m, m.selectionChanged()
 
 	case key.Matches(msg, m.keys.Sync):
 		m.statusMsg = "Syncing..."
@@ -353,11 +386,13 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.hosted {
 				if m.previewOpen {
 					m.previewOpen = false
+					m.previewPath = ""
 					return m, func() tea.Msg { return embed.SplitEditorCloseRequestMsg{} }
 				}
 				m.previewOpen = true
+				m.previewPath = skillPath
 				return m, func() tea.Msg {
-					return embed.SplitEditorRequestMsg{Path: skillPath, Ratio: 0.35, Focus: false}
+					return embed.SplitEditorRequestMsg{Path: skillPath, Ratio: defaultPreviewSplitRatio, Focus: false}
 				}
 			}
 			// standalone: detail pane already shows the rendered SKILL.md; fall back to opening it.
@@ -370,8 +405,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.ToggleAll):
 		m.showAllSkills = !m.showAllSkills
 		m.cursor = 0
-		m.updateViewportContent()
-		return m, nil
+		return m, m.selectionChanged()
 
 	case key.Matches(msg, m.keys.ToggleProject):
 		skill := m.SelectedSkill()
@@ -448,17 +482,18 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleSequenceKey(idx int) (tea.Model, tea.Cmd) {
 	nodes := m.filteredNodes()
 
+	var cmd tea.Cmd
 	switch idx {
 	case 0: // Top (gg)
 		m.cursor = 0
-		m.updateViewportContent()
+		cmd = m.selectionChanged()
 	case 1: // Bottom (G)
 		if len(nodes) > 0 {
 			m.cursor = len(nodes) - 1
-			m.updateViewportContent()
+			cmd = m.selectionChanged()
 		}
 	}
-	return m, nil
+	return m, cmd
 }
 
 // updateSearchMode handles input while in search mode.
@@ -469,24 +504,77 @@ func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterInput.Blur()
 		m.filterText = m.filterInput.Value()
 		m.cursor = 0
-		m.updateViewportContent()
-		return m, nil
+		return m, m.selectionChanged()
 	}
 
 	var cmd tea.Cmd
 	m.filterInput, cmd = m.filterInput.Update(msg)
 	m.filterText = m.filterInput.Value()
 	m.cursor = 0
+	// Filtering re-seats the cursor on a different skill with every keystroke,
+	// so the preview tracks the search results the same way it tracks j/k.
+	return m, tea.Batch(cmd, m.selectionChanged())
+}
+
+// selectionChanged re-renders the detail viewport for the new selection and,
+// when the hosted preview split is open, retargets it at the newly selected
+// skill. Every path that moves the cursor or rebuilds the node list routes
+// through here, so the split can never drift away from what the tree
+// highlights.
+func (m *Model) selectionChanged() tea.Cmd {
 	m.updateViewportContent()
-	return m, cmd
+	return m.stickyPreviewCmd()
+}
+
+// stickyPreviewCmd re-emits SplitEditorRequestMsg for the current selection so
+// the host swaps the buffer in the split it already owns — flow's "sticky
+// navigation", now shared. Ratio 0 means "preserve the existing split
+// geometry"; the host answers by retargeting the live editor over its Neovim
+// RPC socket, so there is no respawn and no flicker per keystroke.
+//
+// A selection with no previewable file emits nothing, leaving the split parked
+// on the last skill that had one. That covers three cases with one rule:
+//
+//   - Builtin skills ship inside the binary and have no SKILL.md on disk to
+//     hand an editor, which is why v refuses them outright.
+//   - Group headers are pure scaffolding that the cursor crosses between every
+//     pair of groups.
+//   - An empty or over-filtered list has no selection at all.
+//
+// Parking beats closing on all three. It keeps sticky navigation consistent
+// with the v key itself — v on a builtin reports "Cannot preview builtin
+// skills" and leaves an open preview alone, it does not close it — and closing
+// would additionally clear previewOpen, so the next v on a real skill would
+// reopen rather than close, exactly the inversion previewOpen exists to
+// prevent. Reopening is also the expensive direction: a retarget is one RPC
+// call, whereas a respawned split costs a process launch and a render freeze.
+func (m *Model) stickyPreviewCmd() tea.Cmd {
+	if !m.hosted || !m.previewOpen {
+		return nil
+	}
+	path := m.previewablePath()
+	if path == "" || path == m.previewPath {
+		return nil
+	}
+	m.previewPath = path
+	return func() tea.Msg {
+		return embed.SplitEditorRequestMsg{Path: path, Ratio: 0, Focus: false}
+	}
+}
+
+// previewablePath returns the SKILL.md path for the current selection, or ""
+// when the selection has no file the host could open: no selection, a group
+// header (SelectedSkill already returns nil for those), or a builtin skill.
+func (m *Model) previewablePath() string {
+	skill := m.SelectedSkill()
+	if skill == nil || skill.Source == skills.SourceTypeBuiltin || skill.Path == "" {
+		return ""
+	}
+	return filepath.Join(skill.Path, "SKILL.md")
 }
 
 // updateViewportContent updates the right pane content based on selection.
 func (m *Model) updateViewportContent() {
-	// The selection is changing, so any open hosted preview split no longer
-	// corresponds to the current skill; reset the toggle so the next v opens.
-	m.previewOpen = false
-
 	node := m.SelectedNode()
 	if node == nil {
 		m.viewport.SetContent("Select a skill to view details")

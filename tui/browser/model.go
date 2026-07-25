@@ -72,10 +72,20 @@ type Model struct {
 	// Pane focus state
 	previewFocused bool
 
-	// previewOpen tracks whether the hosted side-split preview (v) is open
-	// for the current selection, so a second v toggles it closed. It is
-	// reset whenever the selection changes.
+	// previewOpen tracks whether the hosted side-split preview (v) is open,
+	// so a second v toggles it closed. Cursor movement deliberately does NOT
+	// clear it — the preview follows the selection instead (stickyPreviewCmd).
+	// Only the user closing it, or the host telling us the split is gone,
+	// flips it back; if it desynchronises from the real pane, v inverts and
+	// sticky navigation silently stops.
 	previewOpen bool
+
+	// previewPath is the SKILL.md the open preview split currently shows. It
+	// lets sticky navigation skip re-emitting for a selection that already
+	// owns the preview (a clamped page move, a re-render of the same row),
+	// and it records which skill the split stays parked on when the cursor
+	// lands on a row that has no previewable file.
+	previewPath string
 
 	// Cached skill details
 	cachedSkillName string
