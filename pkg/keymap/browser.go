@@ -32,20 +32,25 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 			key.WithKeys("i"),
 			key.WithHelp("i", "install"),
 		),
-		// Capital I, deliberately not sharing lowercase i (Install): the two
-		// are unrelated actions and injecting into a live agent prompt is the
-		// one here with a visible side effect outside the TUI.
+		// A two-key chord, not a capital letter. I sat one shift away from i
+		// (Install) and the two were mistyped for each other; injecting into a
+		// live agent prompt is the action here with a visible side effect
+		// outside the TUI, so it gets the deliberate keystroke. Matched by the
+		// browser's SequenceState, the same matcher that resolves gg.
 		Inject: key.NewBinding(
-			key.WithKeys("I"),
-			key.WithHelp("I", "inject into agent"),
+			key.WithKeys("sa"),
+			key.WithHelp("sa", "send to agent"),
 		),
 		Remove: key.NewBinding(
 			key.WithKeys("x"),
 			key.WithHelp("x", "remove"),
 		),
+		// Moved off lowercase s to free it as the "sa" prefix. The sequence
+		// state has no timeout, so a lone s arms the chord and waits — leaving
+		// sync on s would have made it unreachable rather than merely slow.
 		Sync: key.NewBinding(
-			key.WithKeys("s"),
-			key.WithHelp("s", "sync"),
+			key.WithKeys("S"),
+			key.WithHelp("S", "sync"),
 		),
 		ToggleAll: key.NewBinding(
 			key.WithKeys("A", "0"),
@@ -75,13 +80,19 @@ func NewBrowserKeyMap(cfg *config.Config) BrowserKeyMap {
 	return km
 }
 
-// ShortHelp returns a minimal set of keybindings to show inline in the footer.
-// Open (space, own pane), Edit and TogglePreview are surfaced so the three
-// open actions are discoverable without opening full help. Quit is listed
-// first so it survives the footer's truncate-from-end at narrow widths; the
-// component prepends "Press ? for help".
+// ShortHelp returns the keybindings shown inline in the footer: quit only.
+//
+// The help component unconditionally prefixes the short view with
+// "Press ? for help", so this one entry renders as "Press ? for help • q •
+// quit" — the q and ? the footer is meant to carry, and nothing else. Listing
+// k.Help here as well would print ? twice.
+//
+// The footer used to advertise Open/Edit/TogglePreview too. It was dropped
+// deliberately: a four-pair line was already truncating at ordinary widths, and
+// it went actively wrong in inject mode, where space selects rather than opens.
+// FullHelp and Sections below are untouched, so ? still lists everything.
 func (k BrowserKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Quit, k.Open(), k.Edit, k.TogglePreview}
+	return []key.Binding{k.Quit}
 }
 
 // FullHelp returns all keybindings organized by category.

@@ -94,8 +94,16 @@ func (m Model) renderHeader(width int) string {
 	// Inject mode rebinds space and enter to something with an effect outside
 	// this panel, so it gets a loud, always-visible banner carrying the batch
 	// size — the checkmarks alone scroll out of view.
+	//
+	// The key hint rides the banner rather than the footer on purpose. The
+	// footer is a fixed one-row slot (pager.Config.FooterHeight), and the pager
+	// re-derives the body height from the rendered footer, so anything that
+	// grows it steals a row from the tree and the panel visibly jumps on entry.
+	// The header is already a fixed two rows and is truncated to width below,
+	// so folding the hint in here costs nothing.
 	if m.injectMode {
 		modeIndicator += m.theme.Highlight.Render(fmt.Sprintf(" [INJECT — %d selected]", len(m.injectSelected)))
+		modeIndicator += m.theme.Muted.Render("  space select · p prompt · enter send · esc cancel")
 	}
 
 	// Use Bold style for title with cyan color for consistency
@@ -167,20 +175,13 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 	var line string
 	var indicator string
 
-	// Inject mode prefixes every row — group rows included, with blank cells —
-	// with a 2-cell selection marker. Groups get the blanks rather than being
-	// skipped so the tree prefixes underneath stay column-aligned with their
-	// header; a ragged tree is a worse read than two wasted columns.
+	// Inject mode prefixes every row — group rows included, with blank cells.
+	// Groups get the blanks rather than being skipped so the tree prefixes
+	// underneath stay column-aligned with their header; a ragged tree is a
+	// worse read than a couple of wasted columns.
 	var mark string
 	if m.injectMode {
-		mark = "  "
-		if !node.IsGroup && m.injectIndexOf(node.Name) >= 0 {
-			// A literal check rather than theme.IconStatusCompleted: this
-			// marker must be exactly the 2 cells getLeftPaneWidth reserves for
-			// it, and the themed icon set varies in width between its nerd and
-			// ascii variants.
-			mark = m.theme.Success.Render("✓ ")
-		}
+		mark = m.injectMark(node)
 	}
 
 	if node.IsGroup {
@@ -261,12 +262,15 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 			line = prefix + skillName + tags
 		}
 
-		// A skill carrying a trailing instruction gets a muted pencil, so the
-		// batch is fully readable from the tree: the checkmarks say what will
-		// be sent and this says which lines are more than a bare "/name".
+		// A skill carrying a trailing instruction gets a muted speech bubble, so
+		// the batch is fully readable from the tree: the checkmarks say what
+		// will be sent and this says which lines are more than a bare "/name".
+		// Themed rather than a literal rune so the ascii icon set gets a glyph
+		// it can actually draw; the bare U+270E pencil this replaced rendered
+		// as a hairline in most terminal fonts.
 		if m.injectMode {
 			if prompt := strings.TrimSpace(m.injectPrompts[node.Name]); prompt != "" {
-				line += m.theme.Muted.Render(" ✎")
+				line += m.theme.Muted.Render(" " + theme.IconChat)
 			}
 		}
 	}
@@ -285,6 +289,35 @@ func (m Model) renderNode(node DisplayNode, selected bool, maxWidth int) string 
 	}
 
 	return fullLine
+}
+
+// injectMarkWidth is the column budget the inject-mode row prefix occupies:
+// the themed marker glyph plus one separating space. Measured, not assumed —
+// the previous hardcoded 2 was a bet that every icon set draws the marker in
+// exactly one cell, and getLeftPaneWidth reserved the same 2 by hand, so the
+// two could drift apart on any icon change and shear the whole tree sideways.
+// Both callers now read this, so the reservation is the render by construction.
+func injectMarkWidth() int {
+	return lipgloss.Width(theme.IconStatusCompleted) + 1
+}
+
+// injectMark returns the inject-mode prefix for one row, styled, and always
+// exactly injectMarkWidth() cells wide. Picked skills get the themed marker;
+// everything else — unpicked skills and group headers alike — gets blanks of
+// the same width, which is what keeps the tree prefixes in one column.
+func (m Model) injectMark(node DisplayNode) string {
+	blank := strings.Repeat(" ", injectMarkWidth())
+	if node.IsGroup || m.injectIndexOf(node.Name) < 0 {
+		return blank
+	}
+	// Pad before styling: the ANSI wrapper would otherwise be measured as
+	// content by a naive width count, and padding after it would sit outside
+	// the colour reset.
+	glyph := theme.IconStatusCompleted
+	if pad := injectMarkWidth() - lipgloss.Width(glyph); pad > 0 {
+		glyph += strings.Repeat(" ", pad)
+	}
+	return m.theme.Success.Render(glyph)
 }
 
 // renderRightPane renders the skill details pane.
@@ -692,8 +725,6 @@ func (m Model) FooterView() string {
 		helpText = m.theme.Muted.Render("Type to search • Enter to confirm • Esc to cancel")
 	} else if m.injectPromptEditing {
 		helpText = m.theme.Muted.Render("Type an instruction • Enter to attach • Esc to cancel")
-	} else if m.injectMode {
-		helpText = m.theme.Muted.Render("space select • p prompt • enter send • esc cancel")
 	} else if m.previewFocused {
 		helpText = m.theme.Muted.Render("Tab to switch • j/k C-d/u gg/G to scroll")
 	} else {
@@ -704,6 +735,12 @@ func (m Model) FooterView() string {
 	// footer line — the two are mutually exclusive (search input is dismissed
 	// before inject mode can claim a key) and a single line keeps the body
 	// height stable whichever editor is open.
+	//
+	// This is the ONLY thing allowed to add a row: the pager reserves one
+	// footer row and re-measures the rendered footer to size the body, so an
+	// extra line costs the tree a row. An open editor is worth that (search has
+	// always spent it); merely being in inject mode is not, which is why the
+	// mode's key hint lives in the header instead.
 	var searchLine string
 	if m.searching {
 		searchLine = truncateToWidth("Search: "+m.filterInput.View(), maxWidth)

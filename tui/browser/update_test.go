@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/grovetools/core/tui/components/help"
 	"github.com/grovetools/core/tui/embed"
 	"github.com/grovetools/core/tui/keymap"
@@ -438,14 +439,28 @@ func TestNarrowWidthNoLineExceedsPanel(t *testing.T) {
 	}
 }
 
-// enterInject presses I and asserts the browser actually entered inject mode,
-// returning the resulting model.
+// sendChord types a multi-key sequence one rune at a time through Update,
+// which is where the browser's SequenceState lives. handleKeyMsg is downstream
+// of the matcher and never sees a chord, so chord tests must go through Update.
+func sendChord(m Model, keys string) (Model, tea.Msg) {
+	var out tea.Msg
+	for _, r := range keys {
+		updated, cmd := m.Update(keyRune(r))
+		m = updated.(Model)
+		if msg := msgFromCmd(cmd); msg != nil {
+			out = msg
+		}
+	}
+	return m, out
+}
+
+// enterInject types the sa chord and asserts the browser actually entered
+// inject mode, returning the resulting model.
 func enterInject(t *testing.T, m Model) Model {
 	t.Helper()
-	updated, _ := m.handleKeyMsg(keyRune('I'))
-	m = updated.(Model)
+	m, _ = sendChord(m, "sa")
 	if !m.injectMode {
-		t.Fatal("setup: expected I to enter inject mode")
+		t.Fatal("setup: expected sa to enter inject mode")
 	}
 	return m
 }
@@ -457,28 +472,116 @@ func pressInject(m Model, msg tea.KeyMsg) (Model, tea.Msg) {
 	return updated.(Model), msgFromCmd(cmd)
 }
 
-// TestInjectModeRequiresHost pins the two answers to I: hosted it opens the
+// TestInjectModeRequiresHost pins the two answers to sa: hosted it opens the
 // mode, standalone it explains why it can't rather than stranding the user in
 // a mode whose enter key could never reach an agent.
 func TestInjectModeRequiresHost(t *testing.T) {
-	hostedModel := newTestModel(true)
-	updated, cmd := hostedModel.handleKeyMsg(keyRune('I'))
-	hostedModel = updated.(Model)
+	hostedModel, out := sendChord(newTestModel(true), "sa")
 	if !hostedModel.injectMode {
-		t.Error("hosted: I must enter inject mode")
+		t.Error("hosted: sa must enter inject mode")
 	}
-	if msg := msgFromCmd(cmd); msg != nil {
-		t.Errorf("hosted: entering inject mode must emit nothing, got %T", msg)
+	if out != nil {
+		t.Errorf("hosted: entering inject mode must emit nothing, got %T", out)
 	}
 
-	standalone := newTestModel(false)
-	updated, _ = standalone.handleKeyMsg(keyRune('I'))
-	standalone = updated.(Model)
+	standalone, _ := sendChord(newTestModel(false), "sa")
 	if standalone.injectMode {
-		t.Error("standalone: I must not enter inject mode")
+		t.Error("standalone: sa must not enter inject mode")
 	}
 	if !strings.Contains(standalone.statusMsg, "treemux-hosted") {
 		t.Errorf("standalone: expected an explanatory status, got %q", standalone.statusMsg)
+	}
+}
+
+// TestInjectChordFallsThrough is the guard for the case most likely to strand a
+// user: the sequence state has no timeout, so a lone "s" arms the chord and
+// waits indefinitely. Whatever arrives next that is not "a" must clear the
+// buffer AND be handled on its own terms — swallowing it, or leaving the buffer
+// armed so the key after that gets eaten too, would make the browser feel dead.
+func TestInjectChordFallsThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after rune
+		check func(t *testing.T, m Model)
+	}{
+		{"s then j still moves the cursor", 'j', func(t *testing.T, m Model) {
+			if m.cursor != 1 {
+				t.Errorf("cursor = %d, want 1 — the fall-through key was swallowed", m.cursor)
+			}
+		}},
+		{"s then / still opens search", '/', func(t *testing.T, m Model) {
+			if !m.searching {
+				t.Error("/ after a pending s must still open search")
+			}
+		}},
+		// Double-tapping the prefix disarms rather than re-arming: "ss" is not a
+		// binding and not a prefix of one, so the matcher clears and the second
+		// s falls through to a keymap that no longer binds it (sync moved to S)
+		// — a dead keystroke, not a wedge. The following "a" is likewise inert,
+		// so a fumbled "ssa" costs the user a retry and nothing else. Pinned
+		// because the alternative worth having (re-offering the stray key to
+		// the matcher) would need a second dispatch path, and the plain gg
+		// pattern is the one this browser follows.
+		{"s then s disarms without wedging", 's', func(t *testing.T, m Model) {
+			if m.sequence.IsPending() {
+				t.Errorf("a dead chord must not leave a buffer armed, got %q", m.sequence.Buffer())
+			}
+			m2, _ := sendChord(m, "sa")
+			if !m2.injectMode {
+				t.Error("sa must work immediately after a fumbled double-s")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(true)
+			m.cursor = 0
+
+			updated, _ := m.Update(keyRune('s'))
+			m = updated.(Model)
+			if !m.sequence.IsPending() {
+				t.Fatal("setup: a lone s must arm the chord")
+			}
+			if m.injectMode {
+				t.Fatal("a lone s must not enter inject mode")
+			}
+
+			updated, _ = m.Update(keyRune(tc.after))
+			m = updated.(Model)
+			if m.injectMode {
+				t.Errorf("s then %q must not enter inject mode", tc.after)
+			}
+			tc.check(t, m)
+		})
+	}
+
+	// And the buffer must not survive a completed chord either.
+	m := enterInject(t, newTestModel(true))
+	if m.sequence.IsPending() {
+		t.Errorf("a matched chord must clear the buffer, got %q", m.sequence.Buffer())
+	}
+}
+
+// TestSyncMovedOffLowercaseS pins the rebinding that made the chord possible.
+// Lowercase s is now nothing but a prefix; sync answers to S.
+func TestSyncMovedOffLowercaseS(t *testing.T) {
+	m := newTestModel(true)
+
+	updated, cmd := m.Update(keyRune('S'))
+	if got := updated.(Model).statusMsg; got != "Syncing..." {
+		t.Errorf("S: statusMsg = %q, want %q", got, "Syncing...")
+	}
+	if _, ok := msgFromCmd(cmd).(syncCompleteMsg); !ok {
+		t.Errorf("S must trigger a sync, got %T", msgFromCmd(cmd))
+	}
+
+	// A lone s arms the chord and syncs nothing.
+	updated, cmd = m.Update(keyRune('s'))
+	lower := updated.(Model)
+	if lower.statusMsg == "Syncing..." {
+		t.Error("lowercase s must no longer sync — it is the sa prefix")
+	}
+	if msg := msgFromCmd(cmd); msg != nil {
+		t.Errorf("a pending prefix must emit nothing, got %T", msg)
 	}
 }
 
@@ -694,30 +797,64 @@ func TestInjectDispatchWithEmptySelectionStays(t *testing.T) {
 	}
 }
 
-// TestInjectCancelClearsBatch covers both cancel keys: esc and a second I.
-func TestInjectCancelClearsBatch(t *testing.T) {
-	for _, cancel := range []tea.KeyMsg{{Type: tea.KeyEscape}, keyRune('I')} {
-		m := enterInject(t, newTestModel(true))
-		m.cursor = 0
-		m, _ = pressInject(m, keyRune('p'))
-		updated, _ := m.Update(keyRune('x'))
-		m = updated.(Model)
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		m = updated.(Model)
+// withBatch enters inject mode and assembles a one-skill batch carrying an
+// instruction, so a caller can assert what survives (or doesn't).
+func withBatch(t *testing.T, m Model) Model {
+	t.Helper()
+	m = enterInject(t, m)
+	m.cursor = 0
+	m, _ = pressInject(m, keyRune('p'))
+	updated, _ := m.Update(keyRune('x'))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if len(m.injectSelected) != 1 || len(m.injectPrompts) != 1 {
+		t.Fatalf("setup: want a 1-skill batch with 1 prompt, got %v / %v", m.injectSelected, m.injectPrompts)
+	}
+	return m
+}
 
-		m, out := pressInject(m, cancel)
-		if out != nil {
-			t.Errorf("%v: cancel must emit nothing, got %T", cancel, out)
-		}
-		if m.injectMode {
-			t.Errorf("%v: cancel must leave inject mode", cancel)
-		}
-		if len(m.injectSelected) != 0 {
-			t.Errorf("%v: cancel must clear the selection, got %v", cancel, m.injectSelected)
-		}
-		if len(m.injectPrompts) != 0 {
-			t.Errorf("%v: cancel must clear the prompts, got %v", cancel, m.injectPrompts)
-		}
+// TestInjectCancelClearsBatch covers the cancel key. Esc is now the ONLY one:
+// the old "a second I toggles off" path went away with the I binding, and sa
+// deliberately did not inherit it (see below).
+func TestInjectCancelClearsBatch(t *testing.T) {
+	m := withBatch(t, newTestModel(true))
+
+	m, out := pressInject(m, tea.KeyMsg{Type: tea.KeyEscape})
+	if out != nil {
+		t.Errorf("cancel must emit nothing, got %T", out)
+	}
+	if m.injectMode {
+		t.Error("cancel must leave inject mode")
+	}
+	if len(m.injectSelected) != 0 {
+		t.Errorf("cancel must clear the selection, got %v", m.injectSelected)
+	}
+	if len(m.injectPrompts) != 0 {
+		t.Errorf("cancel must clear the prompts, got %v", m.injectPrompts)
+	}
+}
+
+// TestInjectChordInsideModeIsNonDestructive pins the deliberate replacement for
+// the old I toggle. sa is now cheap enough to fat-finger mid-batch, and
+// enterInjectMode always starts fresh, so re-entering would silently destroy
+// work. It is a no-op instead; esc is the way out.
+func TestInjectChordInsideModeIsNonDestructive(t *testing.T) {
+	m := withBatch(t, newTestModel(true))
+	before := append([]string(nil), m.injectSelected...)
+
+	m, out := sendChord(m, "sa")
+	if out != nil {
+		t.Errorf("sa inside the mode must emit nothing, got %T", out)
+	}
+	if !m.injectMode {
+		t.Error("sa inside the mode must not toggle it off — esc is the cancel")
+	}
+	if !equalStrings(m.injectSelected, before) {
+		t.Errorf("sa inside the mode must not touch the batch: %v, want %v", m.injectSelected, before)
+	}
+	if len(m.injectPrompts) != 1 {
+		t.Errorf("sa inside the mode must not drop attached prompts, got %v", m.injectPrompts)
 	}
 }
 
@@ -798,6 +935,222 @@ func TestInjectModeRenderNoOverflow(t *testing.T) {
 		if got := maxLineWidth(m.FooterView()); got > w {
 			t.Errorf("width %d: inject FooterView() has a line of width %d (must be <= %d)", w, got, w)
 		}
+	}
+}
+
+// TestInjectModeFooterKeepsItsRowBudget is the regression guard for the visible
+// jump on entering the mode: the pager reserves one footer row and re-derives
+// the body height from the rendered footer, so a footer that grows steals a row
+// from the tree. Plain inject mode must therefore cost exactly what normal mode
+// costs. The prompt editor is allowed the one extra line — that is the same
+// budget the search input has always spent, and only while it is open.
+func TestInjectModeFooterKeepsItsRowBudget(t *testing.T) {
+	base := newTestModel(true)
+	base.loading = false
+	updated, _ := base.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	base = updated.(Model)
+
+	normal := lineCount(base.FooterView())
+	if normal != 1 {
+		t.Fatalf("setup: normal-mode footer = %d lines, want 1 (pager reserves one row)", normal)
+	}
+
+	inj := enterInject(t, base)
+	if got := lineCount(inj.FooterView()); got != normal {
+		t.Errorf("inject-mode footer = %d lines, want %d — an extra row shifts the whole panel", got, normal)
+	}
+
+	// A selection and its status feedback must not grow it either.
+	inj.cursor = 0
+	inj, _ = pressInject(inj, keyRune(' '))
+	if got := lineCount(inj.FooterView()); got != normal {
+		t.Errorf("inject-mode footer after a selection = %d lines, want %d", got, normal)
+	}
+
+	// The editor is the one sanctioned extra row, and only while open.
+	editing, _ := pressInject(inj, keyRune('p'))
+	if got := lineCount(editing.FooterView()); got != normal+1 {
+		t.Errorf("prompt-editor footer = %d lines, want %d (the editor line, like search)", got, normal+1)
+	}
+	closed, _ := editing.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if got := lineCount(closed.(Model).FooterView()); got != normal {
+		t.Errorf("footer after closing the editor = %d lines, want %d", got, normal)
+	}
+}
+
+// TestFooterHelpIsQuitAndHelpOnly encodes the user-approved trim: the footer
+// carries q and ?, and nothing else, in EVERY mode. The full keymap stays
+// discoverable through the ? overlay (FullHelp/Sections), which is the point —
+// so this asserts the overlay still lists what the footer dropped.
+func TestFooterHelpIsQuitAndHelpOnly(t *testing.T) {
+	base := newTestModel(true)
+	base.loading = false
+	updated, _ := base.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	base = updated.(Model)
+
+	for _, tc := range []struct {
+		name string
+		m    Model
+	}{
+		{"normal", base},
+		{"inject", enterInject(t, base)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			footer := ansi.Strip(tc.m.FooterView())
+			if !strings.Contains(footer, "Press ? for help") {
+				t.Errorf("footer must keep the ? affordance, got %q", footer)
+			}
+			if !strings.Contains(footer, "quit") {
+				t.Errorf("footer must keep quit, got %q", footer)
+			}
+			for _, gone := range []string{"open in pane", "edit", "preview"} {
+				if strings.Contains(footer, gone) {
+					t.Errorf("footer must no longer advertise %q, got %q", gone, footer)
+				}
+			}
+		})
+	}
+
+	// The trim is a footer trim only — ? must still reach everything.
+	var full []string
+	for _, section := range base.keys.Sections() {
+		for _, b := range section.Bindings {
+			full = append(full, b.Help().Desc)
+		}
+	}
+	joined := strings.Join(full, "|")
+	for _, want := range []string{"open in pane", "send to agent", "sync"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Sections() must still list %q, got %q", want, joined)
+		}
+	}
+}
+
+// TestInjectHintLivesInHeader pins where the key hint went. The header is a
+// fixed two rows and is width-truncated, so it can carry the hint for free;
+// the footer cannot.
+func TestInjectHintLivesInHeader(t *testing.T) {
+	m := enterInject(t, newTestModel(true))
+	m.width = 200 // wide enough that nothing is truncated away
+
+	header := ansi.Strip(m.renderHeader(m.width))
+	for _, want := range []string{"INJECT", "space select", "p prompt", "enter send", "esc cancel"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header must carry %q, got %q", want, header)
+		}
+	}
+	if got := lineCount(m.renderHeader(m.width)); got != 2 {
+		t.Errorf("header = %d lines, want 2 (title + separator)", got)
+	}
+	if footer := ansi.Strip(m.FooterView()); strings.Contains(footer, "space select") {
+		t.Errorf("the hint must not also sit in the footer, got %q", footer)
+	}
+}
+
+// TestInjectHeaderTruncatesAtNarrowWidths keeps the longer banner inside the
+// panel: it is the widest thing the header ever renders.
+func TestInjectHeaderTruncatesAtNarrowWidths(t *testing.T) {
+	for _, w := range []int{20, 40, 60} {
+		m := enterInject(t, newTestModel(true))
+		m.width = w
+		if got := maxLineWidth(m.renderHeader(w)); got > w {
+			t.Errorf("width %d: inject header line width %d exceeds the panel", w, got)
+		}
+	}
+}
+
+// TestInjectMarkerAgreesWithReservation is the alignment guard. renderNode's
+// marker and getLeftPaneWidth's reservation used to be two independent
+// hardcoded 2s; they now both read injectMarkWidth(), and this asserts that in
+// BOTH icon variants — the exact assumption the old "must be exactly 2 cells"
+// comment made and could not keep.
+func TestInjectMarkerAgreesWithReservation(t *testing.T) {
+	t.Cleanup(func() { theme.SetIcons("nerd") })
+
+	for _, icons := range []string{"nerd", "ascii"} {
+		t.Run(icons, func(t *testing.T) {
+			theme.SetIcons(icons)
+			want := injectMarkWidth()
+
+			m := enterInject(t, newTestModel(true))
+			m.width = 120
+			m.cursor = 0
+			m, _ = pressInject(m, keyRune(' ')) // select wsskill, leave wsskill2 unpicked
+
+			// Every row spends the same cells, picked or not, skill or group.
+			for _, node := range m.nodes {
+				if got := lipgloss.Width(m.injectMark(node)); got != want {
+					t.Errorf("mark for %q = %d cells, want %d", node.Name, got, want)
+				}
+			}
+
+			// The reservation is that same number, not a parallel constant.
+			plain := m
+			plain.injectMode = false
+			if got := m.getLeftPaneWidth() - plain.getLeftPaneWidth(); got != want {
+				t.Errorf("getLeftPaneWidth widened by %d, want %d", got, want)
+			}
+
+			// And the tree really does line up: the picked row's name starts in
+			// the same display COLUMN as the unpicked row's. Columns, not byte
+			// offsets — the nerd marker is four bytes and the ascii one three,
+			// which is precisely the confusion this whole fix is about.
+			picked := ansi.Strip(m.renderNode(m.nodes[0], false, 100))
+			unpicked := ansi.Strip(m.renderNode(m.nodes[3], false, 100))
+			if a, b := nameColumn(t, picked, "wsskill"), nameColumn(t, unpicked, "wsskill2"); a != b {
+				t.Errorf("name column: picked at %d, unpicked at %d (rows %q / %q)", a, b, picked, unpicked)
+			}
+		})
+	}
+}
+
+// nameColumn returns the display column a name starts at in an ANSI-stripped
+// rendered row.
+func nameColumn(t *testing.T, row, name string) int {
+	t.Helper()
+	i := strings.Index(row, name)
+	if i < 0 {
+		t.Fatalf("row %q does not contain %q", row, name)
+	}
+	return lipgloss.Width(row[:i])
+}
+
+// TestInjectPromptMarkerIsThemed pins the swap from the literal U+270E pencil
+// (a hairline in most terminal fonts, and absent from the ascii set entirely)
+// to the theme's speech bubble.
+func TestInjectPromptMarkerIsThemed(t *testing.T) {
+	t.Cleanup(func() { theme.SetIcons("nerd") })
+
+	for _, icons := range []string{"nerd", "ascii"} {
+		t.Run(icons, func(t *testing.T) {
+			theme.SetIcons(icons)
+
+			m := enterInject(t, newTestModel(true))
+			m.cursor = 0
+			m, _ = pressInject(m, keyRune('p'))
+			for _, r := range "be brief" {
+				updated, _ := m.Update(keyRune(r))
+				m = updated.(Model)
+			}
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(Model)
+
+			withPrompt := ansi.Strip(m.renderNode(m.nodes[0], false, 100))
+			if !strings.Contains(withPrompt, theme.IconChat) {
+				t.Errorf("a row with an instruction must carry IconChat (%q), got %q", theme.IconChat, withPrompt)
+			}
+			if strings.Contains(withPrompt, "✎") {
+				t.Errorf("the literal pencil must be gone, got %q", withPrompt)
+			}
+
+			// A picked row with no instruction stays bare.
+			m.cursor = 3
+			m, _ = pressInject(m, keyRune(' '))
+			bare := ansi.Strip(m.renderNode(m.nodes[3], false, 100))
+			if strings.Contains(bare, theme.IconChat) {
+				t.Errorf("a row with no instruction must not carry IconChat, got %q", bare)
+			}
+		})
 	}
 }
 

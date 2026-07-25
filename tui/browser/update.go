@@ -137,8 +137,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Handle sequence keys (gg, etc.)
-		result, idx := m.sequence.Process(msg, m.keys.Top, m.keys.Bottom)
+		// Handle sequence keys (gg, sa, etc.). Inject rides this matcher rather
+		// than a flat key so "s" can stay a bare prefix: SequenceNone falls
+		// straight through to handleKeyMsg below with the SECOND key intact, so
+		// "s" then anything-but-"a" costs the user nothing but the dead "s".
+		result, idx := m.sequence.Process(msg, m.keys.Top, m.keys.Bottom, m.keys.Inject)
 		switch result {
 		case keymap.SequenceMatch:
 			m.sequence.Clear()
@@ -358,17 +361,6 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "Install not yet implemented"
 		return m, nil
 
-	case key.Matches(msg, m.keys.Inject):
-		// Only a host can resolve "the agent pane the user came from" and type
-		// into it; standalone there is no such pane, and entering a mode whose
-		// enter key could never do anything would just strand the user.
-		if !m.hosted {
-			m.statusMsg = "Inject requires the treemux-hosted skills panel"
-			return m, nil
-		}
-		m.enterInjectMode()
-		return m, nil
-
 	case key.Matches(msg, m.keys.SwitchView), msg.Type == tea.KeyShiftTab:
 		// Tab or Shift+Tab switches focus to preview pane
 		m.previewFocused = true
@@ -528,7 +520,8 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleSequenceKey handles multi-key sequences like gg.
+// handleSequenceKey handles multi-key sequences like gg. The indices match the
+// binding order passed to sequence.Process in Update.
 func (m Model) handleSequenceKey(idx int) (tea.Model, tea.Cmd) {
 	nodes := m.filteredNodes()
 
@@ -542,6 +535,22 @@ func (m Model) handleSequenceKey(idx int) (tea.Model, tea.Cmd) {
 			m.cursor = len(nodes) - 1
 			cmd = m.selectionChanged()
 		}
+	case 2: // Inject (sa)
+		// Only a host can resolve "the agent pane the user came from" and type
+		// into it; standalone there is no such pane, and entering a mode whose
+		// enter key could never do anything would just strand the user.
+		if !m.hosted {
+			m.statusMsg = "Inject requires the treemux-hosted skills panel"
+			return m, nil
+		}
+		if m.injectMode {
+			// Already assembling a batch. Re-entering would silently drop it —
+			// enterInjectMode always starts fresh — and sa is now cheap enough
+			// to fat-finger mid-batch that a destructive answer is the wrong
+			// one. Esc is the way out; this is a no-op on purpose.
+			return m, nil
+		}
+		m.enterInjectMode()
 	}
 	return m, cmd
 }
@@ -572,11 +581,13 @@ func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // inside the mode.
 func (m Model) handleInjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
-	case key.Matches(msg, m.keys.Inject), key.Matches(msg, m.keys.Back):
-		// I is a toggle and esc is the universal escape hatch; both drop the
-		// batch rather than merely hiding it, because a half-built selection
-		// that survived invisibly would be dispatched by surprise the next
-		// time the user opened the mode.
+	case key.Matches(msg, m.keys.Back):
+		// Esc is the only way out short of dispatching — sa no longer toggles
+		// off, since a chord that both opens and destroys a batch is a bad
+		// answer to a fat-fingered second press. It drops the batch rather than
+		// merely hiding it, because a half-built selection that survived
+		// invisibly would be dispatched by surprise the next time the user
+		// opened the mode.
 		m.exitInjectMode()
 		m.statusMsg = "Inject cancelled"
 		return m, nil, true
@@ -611,7 +622,11 @@ func (m *Model) enterInjectMode() {
 	m.injectPromptEditing = false
 	m.injectPromptTarget = ""
 	m.errorMsg = ""
-	m.statusMsg = "Inject: space to select, p for a prompt, enter to send"
+	// Deliberately no status hint: the keys are spelled out in the header
+	// banner, which is always visible and costs no rows. Putting them here as
+	// well would only compete with the per-action feedback (Selected X, Groups
+	// cannot be injected) that the status line exists for.
+	m.statusMsg = ""
 }
 
 // exitInjectMode leaves the mode and drops the batch. Shared by cancel and by

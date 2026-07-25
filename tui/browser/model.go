@@ -100,7 +100,7 @@ type Model struct {
 	// hosted is true when running inside treemux; edit emits embed messages
 	hosted bool
 
-	// injectMode is the transient multi-select mode I toggles. Its only
+	// injectMode is the transient multi-select mode the sa chord opens. Its only
 	// purpose is composing a batch of "/skill" lines for the agent CLI in the
 	// pane the user came from, so it is deliberately not persistent state:
 	// dispatching or cancelling drops the whole batch.
@@ -673,12 +673,14 @@ func (m *Model) getLeftPaneWidth() int {
 		}
 	}
 
-	// Inject mode prefixes every row with a 2-cell selection marker. Widen the
-	// estimate to match, so entering the mode doesn't start truncating names
-	// that fit a moment earlier — the tree visibly shrinking on I would read
-	// as a bug rather than as a mode change.
+	// Inject mode prefixes every row with a selection marker. Widen the
+	// estimate by exactly what renderNode draws — injectMarkWidth() is the one
+	// definition both read — so entering the mode doesn't start truncating
+	// names that fit a moment earlier (the tree visibly shrinking on sa would
+	// read as a bug rather than as a mode change), and so a wider icon set
+	// can't leave the marker overhanging a reservation never told about it.
 	if m.injectMode {
-		maxWidth += 2
+		maxWidth += injectMarkWidth()
 	}
 
 	maxWidth += 4 // extra padding
