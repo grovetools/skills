@@ -1,0 +1,31 @@
+schema_version: 1
+name: quick-fix
+stages:
+  - id: diagnose
+    produces:
+      diagnosis: diagnosis.md
+    max_attempts: 1
+
+  - id: implement
+    after: [diagnose]
+    produces:
+      implementation-report: implementation-report.md
+    max_attempts: 1
+
+  - id: validate
+    after: [implement]
+    produces:
+      validation-report: validation-report.md
+    max_attempts: 2
+
+  - id: review
+    after: [implement]
+    produces:
+      review: review.md
+    max_attempts: 1
+
+  - id: final-audit
+    after: [validate, review]
+    produces:
+      final-audit: final-audit.md
+    max_attempts: 1

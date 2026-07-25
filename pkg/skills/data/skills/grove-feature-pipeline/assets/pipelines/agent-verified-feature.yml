@@ -1,0 +1,58 @@
+schema_version: 1
+name: agent-verified-feature
+stages:
+  - id: explore
+    execution: fanout
+    skill: grove-source-discovery
+    produces:
+      context-map: context-map.md
+    max_attempts: 1
+
+  - id: spec
+    after: [explore]
+    produces:
+      specification: specification.md
+    max_attempts: 1
+
+  - id: verify-spec
+    after: [spec]
+    produces:
+      verification: verification.md
+    max_attempts: 2
+
+  - id: specification-gate
+    after: [verify-spec]
+    gate: human
+
+  - id: implement
+    after: [specification-gate]
+    execution: adaptive
+    produces:
+      implementation-report: implementation-report.md
+    max_attempts: 2
+
+  - id: review
+    after: [implement]
+    produces:
+      review: review.md
+    max_attempts: 2
+
+  - id: tests
+    after: [implement]
+    produces:
+      test-report: test-report.md
+    max_attempts: 2
+
+  - id: concept-sync
+    after: [review, tests]
+    optional: true
+    skill: grove-concept-maintainer
+    produces:
+      concept-report: concept-report.md
+    max_attempts: 1
+
+  - id: final-audit
+    after: [review, tests, concept-sync]
+    produces:
+      final-audit: final-audit.md
+    max_attempts: 1
