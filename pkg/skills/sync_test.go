@@ -259,6 +259,14 @@ func TestGetSkillsDirectoryForWorktree_ProviderMapping(t *testing.T) {
 		// pi loads project skills from .pi/skills (Agent Skills standard,
 		// skills.ts in the pi source).
 		"pi": filepath.Join("/wt", ".pi", "skills"),
+		// grove-agent is pi with configDir ".grove-agent" (agent/distro/
+		// entry.ts). It must NOT fall through to the claude default: that
+		// wrote skills to a directory its runtime never reads, which is how a
+		// correctly authorized skill goes missing at launch.
+		"grove-agent": filepath.Join("/wt", ".grove-agent", "skills"),
+		// An unknown provider still lands somewhere writable rather than
+		// returning "" and syncing into the worktree root.
+		"something-else": filepath.Join("/wt", ".claude", "skills"),
 	}
 	for provider, want := range cases {
 		if got := GetSkillsDirectoryForWorktree("/wt", provider); got != want {

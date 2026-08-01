@@ -604,7 +604,7 @@ func newSkillsRemoveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&scope, "scope", "user", "Scope to remove from ('project', 'user', 'ecosystem', 'repo-root', or 'admin' for codex).")
-	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode', 'pi').")
+	cmd.Flags().StringVar(&provider, "provider", "claude", "Agent provider ('claude', 'codex', 'opencode', 'pi', 'grove-agent').")
 	return cmd
 }
 
@@ -679,6 +679,16 @@ func getInstallPath(provider, scope string) (string, error) {
 		} else {
 			// Project-scoped skills load from <project>/.pi/skills.
 			pathParts = append(pathParts, ".pi", "skills")
+		}
+	case "grove-agent":
+		// Same loader as pi, rebranded config dir: the distro sets
+		// piConfig.configDir to ".grove-agent" (agent/distro/entry.ts), and
+		// every project- and user-scoped lookup goes through it. Kept in step
+		// with GetSkillsDirectoryForWorktree, which the sync path uses.
+		if scope == "user" {
+			pathParts = append(pathParts, ".grove-agent", "agent", "skills")
+		} else {
+			pathParts = append(pathParts, ".grove-agent", "skills")
 		}
 	default:
 		return "", fmt.Errorf("unsupported provider: %s", provider)

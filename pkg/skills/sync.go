@@ -395,6 +395,14 @@ func GetSkillsDirectoryForWorktree(worktreePath, provider string) string {
 		// (loadSkills in packages/coding-agent/src/core/skills.ts of the pi
 		// source), so existing SKILL.md content syncs unchanged.
 		return filepath.Join(worktreePath, ".pi", "skills")
+	case "grove-agent":
+		// The grove-agent distro is pi with a rebranded config dir: its
+		// identity sets piConfig.configDir to ".grove-agent" (agent/distro/
+		// entry.ts), and every project-local lookup — skills included — goes
+		// through that CONFIG_DIR_NAME. Without this case grove-agent fell
+		// through to .claude/skills and the runtime read a directory nothing
+		// ever wrote, so an authorized skill was simply invisible to it.
+		return filepath.Join(worktreePath, ".grove-agent", "skills")
 	default:
 		return filepath.Join(worktreePath, ".claude", "skills")
 	}
