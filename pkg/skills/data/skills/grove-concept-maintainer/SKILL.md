@@ -51,6 +51,15 @@ nb concept link concept <id> <ws>:<other-id>     # new relations, both direction
 nb concept link plan <id> <plan-ref>             # implementation plans
 ```
 
+### 5. Refresh the architecture map
+Concept maps (concepts scaffolded by `nb concept map`, e.g. `grovetools:grove-architecture`) model repo/subsystem structure and relationships in LikeC4 — they drift like prose does, and `validate` only catches syntax, not a relationship that quietly stopped being true. If the change added/removed a repo, moved a responsibility between repos, or altered who-calls-whom at the subsystem level:
+```bash
+cat $(nb concept path <map-id>)/overview.md        # the map plan + relationship inventory
+# edit src/*.c4 (relationship lines cite concepts — keep citations current)
+nb concept map validate <map-id> --file src/<edited>.c4
+```
+Skip this step for changes contained inside one repo that don't move any seam. Deeper map work (new views, decomposition) is the `grove-concept-mapper` skill's job, not this one's.
+
 ## Workflow 2: Deepen a Stub
 
 ### 1. Load the seed material
@@ -104,6 +113,7 @@ Rules files have sharp edges; all of these were found empirically:
 - Preset compiles >0 files, under cap, no unintended test files, no dead `@a:` lines, measured numbers stamped
 - `status:` reflects reality (stub = assembled from survey, active = code-verified)
 - New/changed relations linked via `nb concept link`
+- Architecture maps still `validate` clean and their relationship lines still match reality (when a seam moved)
 - Code repos untouched — this skill only writes inside the notebook
 
 ## Key Insight
