@@ -60,6 +60,12 @@ nb concept map validate <map-id> --file src/<edited>.c4
 ```
 Skip this step for changes contained inside one repo that don't move any seam. Deeper map work (new views, decomposition) is the `grove-concept-mapper` skill's job, not this one's.
 
+Map-side concept conventions:
+- Link a concept with the LikeC4-valid custom URI `link concept://<workspace>:<concept-id> 'Concept: …'`; the URI payload is the canonical portable `workspace:concept-id` reference. Never write an absolute `file://` notebook path. Preserve ordinary external URLs unchanged.
+- Add `metadata { concept '<workspace>:<concept-id>' }` when one concept clearly owns the element. Leave genuinely cross-cutting or ambiguous elements unassigned rather than guessing.
+- Draft proposal maps live only in the originating job's artifacts. After the design is accepted but before it ships, promote it to the owning concept's `likec4/` directory, tag proposed elements and relationships `#planned`, and put `plan` and `job` provenance metadata on promoted elements.
+- Planned model facts must converge: when implemented, update them to live truth and remove `#planned`; when stale, explicitly decide or delete them. Do not create proposal concepts—concepts describe code truth.
+
 ## Workflow 2: Deepen a Stub
 
 ### 1. Load the seed material
@@ -113,7 +119,7 @@ Rules files have sharp edges; all of these were found empirically:
 - Preset compiles >0 files, under cap, no unintended test files, no dead `@a:` lines, measured numbers stamped
 - `status:` reflects reality (stub = assembled from survey, active = code-verified)
 - New/changed relations linked via `nb concept link`
-- Architecture maps still `validate` clean and their relationship lines still match reality (when a seam moved)
+- Architecture maps still `validate` clean and their relationship lines still match reality (when a seam moved); concept links are portable, confidently owned elements carry concept metadata, and stale `#planned` facts are decided or deleted
 - Code repos untouched — this skill only writes inside the notebook
 
 ## Key Insight
