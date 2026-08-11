@@ -4,6 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/grovetools/core/config"
+	"github.com/grovetools/core/pkg/notespace"
+	"github.com/grovetools/core/pkg/workspace"
 )
 
 func TestLoadPlaybookFromDir(t *testing.T) {
@@ -81,6 +85,43 @@ Hello.
 	}
 	if len(pb.Recipes) != 1 || pb.Recipes[0].Description != "Standard test recipe" {
 		t.Errorf("recipes: got %+v", pb.Recipes)
+	}
+}
+
+func TestLoadPlaybookFromEnumeratedPrimaryNotespace(t *testing.T) {
+	ResetPlaybookSearchPaths()
+	defer ResetPlaybookSearchPaths()
+
+	notebookRoot := t.TempDir()
+	notespaceRoot := filepath.Join(notebookRoot, workspace.NotespaceDirectory, "physical-name")
+	playbookRoot := filepath.Join(notespaceRoot, "playbooks", "primary-playbook")
+	if err := os.MkdirAll(playbookRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(playbookRoot, "playbook.toml"), []byte("name = \"primary-playbook\"\ndescription = \"resolver fixture\"\nversion = \"1.0.0\"\n"), 0o644); err != nil { //nolint:gosec // G306: test
+		t.Fatal(err)
+	}
+	stamp, err := notespace.MintNotespace(notespaceRoot, notespace.NotespaceMutable{Name: "friendly-name", Subject: "example.com/org/playbooks", Kind: "repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Notebooks: &config.NotebooksConfig{Definitions: map[string]*config.Notebook{
+		"test": {RootDir: notebookRoot},
+	}}}
+	machine := &config.MachineConfig{Primaries: map[string]string{"example.com/org/playbooks": stamp.ID}}
+	dirs := configuredNotespaceDirs(cfg, machine, func(locator *workspace.NotebookLocator, node *workspace.WorkspaceNode) (string, error) {
+		return locator.GetPlaybooksDir(node)
+	})
+	for _, dir := range dirs {
+		RegisterPlaybookSearchPath(dir)
+	}
+
+	pb, err := LoadPlaybook("", "primary-playbook")
+	if err != nil {
+		t.Fatalf("LoadPlaybook from enumerated notespace: %v (dirs %v)", err, dirs)
+	}
+	if pb.Manifest.Name != "primary-playbook" {
+		t.Fatalf("manifest name = %q", pb.Manifest.Name)
 	}
 }
 

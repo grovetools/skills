@@ -5,10 +5,42 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/grovetools/core/config"
+	"github.com/grovetools/core/pkg/notespace"
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/core/pkg/worktreeregistry"
 	"github.com/grovetools/core/util/pathutil"
 )
+
+func TestConfiguredNotespaceDirsUsesPrimaryResolverAndLocator(t *testing.T) {
+	notebookRoot := t.TempDir()
+	primaryRoot := filepath.Join(notebookRoot, workspace.NotespaceDirectory, "physical-primary")
+	replicaRoot := filepath.Join(notebookRoot, workspace.NotespaceDirectory, "physical-replica")
+	for _, dir := range []string{primaryRoot, replicaRoot, filepath.Join(notebookRoot, workspace.NotespaceDirectory, "unstamped")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary, err := notespace.MintNotespace(primaryRoot, notespace.NotespaceMutable{Name: "friendly-primary", Subject: "example.com/org/repo", Kind: "repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notespace.MintNotespace(replicaRoot, notespace.NotespaceMutable{Name: "friendly-replica", Subject: "example.com/org/repo", Kind: "repo"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Notebooks: &config.NotebooksConfig{Definitions: map[string]*config.Notebook{
+		"test": {RootDir: notebookRoot},
+	}}}
+	machine := &config.MachineConfig{Primaries: map[string]string{"example.com/org/repo": primary.ID}}
+
+	got := configuredNotespaceDirs(cfg, machine, func(locator *workspace.NotebookLocator, node *workspace.WorkspaceNode) (string, error) {
+		return locator.GetSkillsDir(node)
+	})
+	want := filepath.Join(primaryRoot, "skills")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("configuredNotespaceDirs = %v, want only primary locator path %q", got, want)
+	}
+}
 
 // normalizeForTest mirrors collectWorktreePaths' dedup key so assertions can
 // compare paths through the same symlink/case normalization the code uses.

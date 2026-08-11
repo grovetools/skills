@@ -12,6 +12,7 @@ import (
 	corefs "github.com/grovetools/core/fs"
 	"github.com/grovetools/core/git"
 	"github.com/grovetools/core/logging"
+	"github.com/grovetools/core/pkg/notespace"
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/grovetools/core/pkg/worktreeregistry"
 	"github.com/grovetools/core/util/pathutil"
@@ -276,36 +277,71 @@ func addPlaybookSkillSources(svc *service.Service, node *workspace.WorkspaceNode
 	}
 }
 
-// addNotebookSkillSources scans all configured notebook definitions for skill directories.
+// addNotebookSkillSources enumerates recorded primary notespaces and asks the
+// core locator for each skills directory. It never infers notes-plane identity
+// from a literal directory segment.
 func addNotebookSkillSources(svc *service.Service, sources map[string]SkillSource) {
-	if svc == nil || svc.Config == nil || svc.Config.Notebooks == nil {
+	if svc == nil || svc.Config == nil {
 		return
 	}
+	machine, err := config.LoadMachineConfig()
+	if err != nil || machine == nil {
+		return
+	}
+	for _, skillsDir := range configuredNotespaceDirs(svc.Config, machine, func(locator *workspace.NotebookLocator, node *workspace.WorkspaceNode) (string, error) {
+		return locator.GetSkillsDir(node)
+	}) {
+		addSkillSources(skillsDir, SourceTypeEcosystem, sources)
+	}
+}
 
-	for _, nb := range svc.Config.Notebooks.Definitions {
+// configuredNotespaceDirs enumerates stamped roots from configured notebooks,
+// resolves each display name through core's primary routing contract, and then
+// delegates content-path construction to NotebookLocator. Directory names are
+// candidates only; only a matching resolver result is emitted.
+func configuredNotespaceDirs(cfg *config.Config, machine *config.MachineConfig, resolve func(*workspace.NotebookLocator, *workspace.WorkspaceNode) (string, error)) []string {
+	if cfg == nil || cfg.Notebooks == nil || machine == nil {
+		return nil
+	}
+	locator := workspace.NewNotebookLocator(cfg)
+	seen := make(map[string]bool)
+	var dirs []string
+	for notebookName, nb := range cfg.Notebooks.Definitions {
 		if nb == nil || nb.RootDir == "" {
 			continue
 		}
-
 		rootDir, err := pathutil.Expand(nb.RootDir)
+		if err != nil || workspace.ValidateNotespaceLayout(rootDir) != nil {
+			continue
+		}
+		entries, err := os.ReadDir(filepath.Join(rootDir, workspace.NotespaceDirectory))
 		if err != nil {
 			continue
 		}
-
-		workspacesDir := filepath.Join(rootDir, "workspaces")
-		wsEntries, err := os.ReadDir(workspacesDir)
-		if err != nil {
-			continue
-		}
-
-		for _, wsEntry := range wsEntries {
-			if !wsEntry.IsDir() {
+		for _, entry := range entries {
+			if !entry.IsDir() {
 				continue
 			}
-			skillsDir := filepath.Join(workspacesDir, wsEntry.Name(), "skills")
-			addSkillSources(skillsDir, SourceTypeEcosystem, sources)
+			candidateRoot := filepath.Join(rootDir, workspace.NotespaceDirectory, entry.Name())
+			stamp, err := notespace.LoadNotespace(candidateRoot)
+			if err != nil || stamp == nil {
+				continue
+			}
+			resolution, err := workspace.ResolveNotespaceName(stamp.Name, cfg, machine)
+			if err != nil || filepath.Clean(resolution.Root) != filepath.Clean(candidateRoot) {
+				continue
+			}
+			node := &workspace.WorkspaceNode{Name: filepath.Base(resolution.Root), Path: resolution.Root, NotebookName: notebookName}
+			dir, err := resolve(locator, node)
+			if err != nil || dir == "" || seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			dirs = append(dirs, dir)
 		}
 	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // getEcosystemSkillsDir returns the skills directory for the ecosystem containing the node

@@ -11,7 +11,6 @@ import (
 
 	"github.com/grovetools/core/config"
 	"github.com/grovetools/core/pkg/workspace"
-	"github.com/grovetools/core/util/pathutil"
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
@@ -102,10 +101,10 @@ func ResetPlaybookSearchPaths() {
 //
 //  1. Project — the notebook workspace playbooks/ directory for the
 //     project that contains workDir (e.g.
-//     ~/notebooks/<nb>/workspaces/<project>/playbooks/).
+//     ~/notebooks/<nb>/notespaces/<project>/playbooks/).
 //  2. Ecosystem — the playbooks/ directory for the root ecosystem that
 //     contains the project (e.g.
-//     ~/notebooks/<nb>/workspaces/<ecosystem>/playbooks/).
+//     ~/notebooks/<nb>/notespaces/<ecosystem>/playbooks/).
 //  3. User — the global user-scoped playbooks directory
 //     (~/.config/grove/playbooks, or $XDG_CONFIG_HOME/grove/playbooks).
 //  4. Builtin — no builtin playbooks ship today; reserved for future use.
@@ -180,41 +179,21 @@ func GetPlaybookSearchDirs(workDir string) []string {
 	return unique
 }
 
-// notebookWorkspacePlaybookDirs returns a `playbooks/` directory for
-// every workspace under every notebook defined in the user's grove
-// config. This is the "global" fallback discovery path used when the
-// CLI is invoked without a grove-managed workspace context, so e.g.
-// `flow playbook show gdv2` can find a playbook that lives inside
-// ~/notebooks/grovetools/workspaces/grovetools/playbooks/gdv2/ without
-// requiring any sync to have run first. Mirrors the skill discovery
-// logic in sync.go's addNotebookSkillSources.
+// notebookWorkspacePlaybookDirs returns the locator-derived `playbooks/`
+// directory for every recorded primary notespace. Replica and unstamped
+// directories are deliberately excluded by core's notespace resolver.
 func notebookWorkspacePlaybookDirs() []string {
 	cfg, err := config.LoadDefault()
-	if err != nil || cfg == nil || cfg.Notebooks == nil {
+	if err != nil || cfg == nil {
 		return nil
 	}
-	var dirs []string
-	for _, nb := range cfg.Notebooks.Definitions {
-		if nb == nil || nb.RootDir == "" {
-			continue
-		}
-		rootDir, err := pathutil.Expand(nb.RootDir)
-		if err != nil {
-			continue
-		}
-		workspacesDir := filepath.Join(rootDir, "workspaces")
-		entries, err := os.ReadDir(workspacesDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			dirs = append(dirs, filepath.Join(workspacesDir, entry.Name(), "playbooks"))
-		}
+	machine, err := config.LoadMachineConfig()
+	if err != nil || machine == nil {
+		return nil
 	}
-	return dirs
+	return configuredNotespaceDirs(cfg, machine, func(locator *workspace.NotebookLocator, node *workspace.WorkspaceNode) (string, error) {
+		return locator.GetPlaybooksDir(node)
+	})
 }
 
 // userPlaybooksDir returns the global user-scoped playbooks directory,
