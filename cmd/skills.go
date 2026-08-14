@@ -370,6 +370,20 @@ Example grove.toml configuration:
   [skills]
   use = ["explain-with-analogy", "grove-maintainer"]
   providers = ["claude", "codex"]  # default: ["claude"]
+  scope = "all"                    # or "ecosystem-root"; default: "all"
+
+The scope key controls which workspaces a [skills] block is seeded into. It is
+a property of the block that declares it, so each layer of the cascade (global
+base, [skills.ecosystems.<name>], [skills.projects.<name>], ecosystem
+grove.toml, project grove.toml) carries its own:
+
+  all            Seed into every workspace that inherits the block — the
+                 ecosystem root and each of its member repositories.
+  ecosystem-root Seed only into ecosystem roots and worktrees (and standalone
+                 projects, which are their own root). Members of an ecosystem
+                 are skipped, so an agent working at the top of an ecosystem
+                 loads the skill set once instead of once per module. Skills
+                 declared for a member specifically still reach it.
 
 Use --dry-run to preview what would be synced without making changes.
 Use --prune to remove skills that are no longer declared in the configuration.
@@ -428,7 +442,7 @@ func syncSingleWorkspace(svc *service.Service, node *workspace.WorkspaceNode, pr
 				logger.InfoPretty(fmt.Sprintf("  - %s", name))
 			}
 		} else {
-			logger.InfoPretty(fmt.Sprintf("DRY RUN: No skills to sync for %s", node.Name))
+			logger.InfoPretty(fmt.Sprintf("DRY RUN: %s", nothingToSyncReason(node.Name, result)))
 		}
 		return nil
 	}
@@ -439,9 +453,18 @@ func syncSingleWorkspace(svc *service.Service, node *workspace.WorkspaceNode, pr
 	case len(result.ResolvedSkills) > 0:
 		logger.InfoPretty(fmt.Sprintf("Skills already up to date for %s (%d configured)", node.Name, len(result.ResolvedSkills)))
 	default:
-		logger.InfoPretty(fmt.Sprintf("No skills to sync for %s", node.Name))
+		logger.InfoPretty(nothingToSyncReason(node.Name, result))
 	}
 	return nil
+}
+
+// nothingToSyncReason explains an empty sync so a workspace deliberately left
+// bare by an "ecosystem-root" seed scope does not read as a misconfiguration.
+func nothingToSyncReason(name string, result *skills.SyncResult) string {
+	if result != nil && result.ScopedOut {
+		return fmt.Sprintf("No skills to sync for %s (scoped to the ecosystem root; see [skills] scope)", name)
+	}
+	return fmt.Sprintf("No skills to sync for %s", name)
 }
 
 // syncMultipleWorkspaces syncs skills for all workspaces or ecosystem workspaces.

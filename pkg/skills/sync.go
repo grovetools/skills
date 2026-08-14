@@ -440,6 +440,12 @@ type SyncResult struct {
 	MissingSkills []string
 	DestPaths     []string
 	Error         string
+
+	// ScopedOut is true when at least one configured layer was skipped for
+	// this workspace because its [skills] scope excluded it (see SeedScope).
+	// Paired with an empty SyncedSkills it means "seeded at the ecosystem
+	// root instead", not "nothing configured".
+	ScopedOut bool
 }
 
 // SyncWorkspace resolves and installs skills for a single workspace node.
@@ -471,6 +477,7 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 	if skillsCfg == nil {
 		skillsCfg = &SkillsConfig{}
 	}
+	result.ScopedOut = skillsCfg.ScopedOut
 
 	providers := []string{"claude"}
 	if len(skillsCfg.Providers) > 0 {
@@ -486,10 +493,7 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 
 	if len(skillsCfg.Use) == 0 && len(skillsCfg.Dependencies) == 0 && !hasPlaybookSkills {
 		if opts.Prune && !opts.DryRun {
-			for _, provider := range providers {
-				destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
-				cleanupRemovedSkills(destBaseDir, nil)
-			}
+			cleanupAllSkillDirs(gitRoot, providers)
 		}
 		return result, nil
 	}
@@ -507,10 +511,7 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 
 	if len(resolved) == 0 {
 		if opts.Prune && !opts.DryRun {
-			for _, provider := range providers {
-				destBaseDir := GetSkillsDirectoryForWorktree(gitRoot, provider)
-				cleanupRemovedSkills(destBaseDir, nil)
-			}
+			cleanupAllSkillDirs(gitRoot, providers)
 		}
 		return result, nil
 	}
@@ -543,6 +544,22 @@ func SyncWorkspace(svc *service.Service, node *workspace.WorkspaceNode, opts Syn
 	changed, err := SyncConfiguredSkills(gitRoot, resolved, opts.Prune, logger)
 	result.SyncedSkills = changed
 	return result, err
+}
+
+// cleanupAllSkillDirs removes every synced skill directory for the given
+// providers, in the repository root and in each of its worktrees. It is the
+// prune path for a workspace that resolves to no skills at all — nothing is
+// configured, or every configured layer was scoped elsewhere (see SeedScope).
+// Worktrees are included so that narrowing a declaration's scope actually
+// clears the duplicated copies rather than leaving them behind everywhere but
+// the main checkout.
+func cleanupAllSkillDirs(gitRoot string, providers []string) {
+	roots := append([]string{gitRoot}, collectWorktreePaths(gitRoot)...)
+	for _, root := range roots {
+		for _, provider := range providers {
+			cleanupRemovedSkills(GetSkillsDirectoryForWorktree(root, provider), nil)
+		}
+	}
 }
 
 // cleanupRemovedSkills removes skill directories that are no longer in the configured set.

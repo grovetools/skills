@@ -12,6 +12,41 @@
 
 **Ecosystem Synchronization**: When executed from an ecosystem root with the `--ecosystem` flag, the tool iterates through all child projects defined in the workspace. It pushes relevant skills to each project's configuration directory, ensuring consistent agent behavior across a monorepo or multi-project environment.
 
+**Seeding Scope**: Each layer of the configuration cascade declares where its own skills are seeded, via the `scope` key in its `[skills]` block. This bounds the ecosystem fan-out described above so that shared skills need not be copied into every member repository.
+
+## Configuration
+
+The `[skills]` block in `grove.toml` declares a workspace's active skill set:
+
+```toml
+[skills]
+use = ["explain-with-analogy", "grove-maintainer"]
+providers = ["claude", "codex"]   # default: ["claude"]
+scope = "all"                     # or "ecosystem-root"; default: "all"
+```
+
+`LoadSkillsConfig` merges five layers — the global base, `[skills.ecosystems.<name>]`, the ecosystem's `grove.toml`, `[skills.projects.<name>]`, and the project's own `grove.toml` — into one effective set per workspace.
+
+`scope` is a property of the block that declares it, not of the merged result. Every layer carries its own, and it is evaluated against the workspace being synced *before* that layer is merged in:
+
+*   **`all`** (default): the block reaches every workspace that inherits it — the ecosystem root **and** each of its member repositories.
+*   **`ecosystem-root`**: the block reaches only ecosystem roots and ecosystem worktrees, plus standalone projects (which are their own root, with no higher-level copy to fall back on). Members of an ecosystem are skipped.
+
+`ecosystem-root` exists for the ecosystem-top workflow. Under `all`, an agent working at the top of an ecosystem loads the same skill set once per module it touches, because every member repository carries its own identical `.claude/skills` copy. Narrowing the shared layers seeds them once, at the root, while repository-specific declarations are untouched:
+
+```toml
+# ~/.config/grove/grove.toml — ecosystem-wide skills, seeded once at the root
+[skills]
+use = ["grove-skill-builder", "grove-skill-guide"]
+scope = "ecosystem-root"
+
+# still seeded into the member repository itself
+[skills.projects.flow]
+use = ["flow-builder"]
+```
+
+When every layer that would apply to a workspace is scoped away, `sync --prune` clears that workspace's previously seeded copies — in its worktrees as well — and reports the empty result as *scoped to the ecosystem root* rather than as nothing configured. An unrecognized `scope` value is a configuration error, not a silent fallback to the default.
+
 ## Supported Providers
 
 `skills` manages configurations for the following local runtimes:

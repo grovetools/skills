@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -8,6 +9,59 @@ import (
 	"github.com/grovetools/core/pkg/workspace"
 	"github.com/pelletier/go-toml/v2"
 )
+
+// SeedScope controls which workspaces a single [skills] declaration is seeded
+// into. It is a property of the declaring layer, not of the merged result:
+// each layer of the cascade carries its own scope and is evaluated against the
+// workspace being synced before its skills are merged in.
+type SeedScope string
+
+const (
+	// SeedScopeAll seeds the declaration into every workspace that inherits
+	// it — the ecosystem root and each of its member repositories. This is
+	// the default and the historical behavior.
+	SeedScopeAll SeedScope = "all"
+
+	// SeedScopeEcosystemRoot seeds the declaration only into workspaces that
+	// are an ecosystem root (or ecosystem worktree), plus standalone projects
+	// that sit outside any ecosystem and are therefore their own root.
+	// Member repositories of an ecosystem are skipped, so an agent working at
+	// the top of an ecosystem sees the skill set once instead of once per
+	// member. Skills declared for a member repository specifically — its own
+	// grove.toml, or [skills.projects.<name>] in the global config — are
+	// unaffected and still seeded there.
+	SeedScopeEcosystemRoot SeedScope = "ecosystem-root"
+)
+
+// scopeAppliesTo reports whether a [skills] declaration carrying the given
+// seed scope should contribute skills to node.
+func scopeAppliesTo(scope SeedScope, node *workspace.WorkspaceNode) bool {
+	if scope != SeedScopeEcosystemRoot {
+		return true
+	}
+	if node == nil || node.IsEcosystem() {
+		return true
+	}
+	// A workspace that belongs to no ecosystem is its own root: there is no
+	// higher-level copy of these skills for an agent to fall back on, so
+	// scoping them out would be pure loss rather than deduplication.
+	return node.RootEcosystemPath == ""
+}
+
+// validateSeedScope rejects unrecognized scope values so a typo surfaces as a
+// config error instead of silently reverting to the permissive default.
+func validateSeedScope(cfg *SkillsConfig, source string) error {
+	if cfg == nil {
+		return nil
+	}
+	switch cfg.Scope {
+	case "", SeedScopeAll, SeedScopeEcosystemRoot:
+		return nil
+	default:
+		return fmt.Errorf("invalid [skills] scope %q in %s (expected %q or %q)",
+			cfg.Scope, source, SeedScopeAll, SeedScopeEcosystemRoot)
+	}
+}
 
 // DependencyConfig specifies how a particular skill should be resolved.
 type DependencyConfig struct {
@@ -43,6 +97,20 @@ type SkillsConfig struct {
 	// Used in global config (~/.config/grove/grove.toml) to define
 	// ecosystem-specific skills that live in dotfiles rather than repo config.
 	Ecosystems map[string]*SkillsConfig `toml:"ecosystems" yaml:"ecosystems"`
+
+	// Scope controls which workspaces THIS declaration is seeded into.
+	// Defaults to SeedScopeAll. Set it to SeedScopeEcosystemRoot on a layer
+	// whose skills should live only at the top of an ecosystem instead of
+	// being copied into every member repository. Each layer of the cascade
+	// carries its own scope; the merged result never does.
+	Scope SeedScope `toml:"scope" yaml:"scope"`
+
+	// ScopedOut is set by LoadSkillsConfig when at least one layer of the
+	// cascade contributed nothing to this workspace because its Scope
+	// excluded it. It is diagnostic only — never read from grove.toml — and
+	// lets callers explain an empty skill set as "scoped elsewhere" rather
+	// than "nothing configured".
+	ScopedOut bool `toml:"-" yaml:"-"`
 }
 
 // groveTomlSkills is used to extract the skills block from grove.toml
@@ -61,17 +129,44 @@ type groveTomlSkills struct {
 //
 // User config merges before actual project/ecosystem config, so team-configured
 // skills take precedence but user preferences fill in the gaps.
+//
+// Each layer additionally carries its own seeding scope (SkillsConfig.Scope).
+// A layer scoped to SeedScopeEcosystemRoot is skipped entirely for workspaces
+// that are members of an ecosystem, so ecosystem-wide skills are seeded once at
+// the ecosystem root instead of once per member repository. Layers that target
+// a specific repository — its own grove.toml, or global [skills.projects.<name>]
+// — are unaffected unless they opt in themselves.
 func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*SkillsConfig, error) {
 	// Load global config first (contains both base skills and user-scoped overrides)
 	globalConfig := loadSkillsFromGlobalConfig(cfg)
+	if err := validateSeedScope(globalConfig, "global config [skills]"); err != nil {
+		return nil, err
+	}
 
 	// If no node, just return base global config (without project/ecosystem scopes)
 	if node == nil {
 		return applySkillsDefaults(copySkillsConfig(globalConfig)), nil
 	}
 
-	// Start with a copy of the base global config
-	merged := copySkillsConfig(globalConfig)
+	// scopedOut records whether any layer was dropped for this workspace, so
+	// callers can distinguish "scoped elsewhere" from "nothing configured".
+	scopedOut := false
+	apply := func(acc, layer *SkillsConfig) *SkillsConfig {
+		if layer == nil {
+			return acc
+		}
+		if !scopeAppliesTo(layer.Scope, node) {
+			if len(layer.Use) > 0 || len(layer.Dependencies) > 0 {
+				scopedOut = true
+			}
+			return acc
+		}
+		return mergeSkillsConfig(acc, layer)
+	}
+
+	// Start from the base global config
+	var merged *SkillsConfig
+	merged = apply(merged, globalConfig)
 
 	// Determine ecosystem name for user-scoped lookups
 	var ecoName string
@@ -84,7 +179,10 @@ func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*S
 	// 1. Apply global ecosystem overrides (user-scoped, from ~/.config/grove/grove.toml)
 	if ecoName != "" && globalConfig != nil && globalConfig.Ecosystems != nil {
 		if ecoCfg, ok := globalConfig.Ecosystems[ecoName]; ok {
-			merged = mergeSkillsConfig(merged, ecoCfg)
+			if err := validateSeedScope(ecoCfg, fmt.Sprintf("global config [skills.ecosystems.%s]", ecoName)); err != nil {
+				return nil, err
+			}
+			merged = apply(merged, ecoCfg)
 		}
 	}
 
@@ -94,7 +192,10 @@ func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*S
 		if err != nil {
 			return nil, err
 		}
-		merged = mergeSkillsConfig(merged, ecosystemConfig)
+		if err := validateSeedScope(ecosystemConfig, filepath.Join(node.RootEcosystemPath, "grove.toml")); err != nil {
+			return nil, err
+		}
+		merged = apply(merged, ecosystemConfig)
 	}
 
 	// 3. Apply global project overrides (user-scoped, from ~/.config/grove/grove.toml)
@@ -105,7 +206,10 @@ func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*S
 			projectName = filepath.Base(node.ParentProjectPath)
 		}
 		if projCfg, ok := globalConfig.Projects[projectName]; ok {
-			merged = mergeSkillsConfig(merged, projCfg)
+			if err := validateSeedScope(projCfg, fmt.Sprintf("global config [skills.projects.%s]", projectName)); err != nil {
+				return nil, err
+			}
+			merged = apply(merged, projCfg)
 		}
 	}
 
@@ -114,7 +218,19 @@ func LoadSkillsConfig(cfg *coreconfig.Config, node *workspace.WorkspaceNode) (*S
 	if err != nil {
 		return nil, err
 	}
-	merged = mergeSkillsConfig(merged, projectConfig)
+	if err := validateSeedScope(projectConfig, filepath.Join(node.Path, "grove.toml")); err != nil {
+		return nil, err
+	}
+	merged = apply(merged, projectConfig)
+
+	// Every configured layer was scoped away from this workspace: return an
+	// empty (not nil) config so callers can report why nothing was seeded.
+	if merged == nil && scopedOut {
+		merged = &SkillsConfig{}
+	}
+	if merged != nil {
+		merged.ScopedOut = scopedOut
+	}
 
 	return applySkillsDefaults(merged), nil
 }
@@ -182,6 +298,9 @@ func LoadSkillsFromPath(dir string) (*SkillsConfig, error) {
 
 // mergeSkillsConfig merges ecosystem and project configs.
 // Project config takes precedence for dependencies, but Use arrays are unioned.
+// Scope is deliberately not carried into the result: it is a directive about
+// where a single layer's skills are seeded, consumed by LoadSkillsConfig
+// before the merge, so the effective config never has one.
 func mergeSkillsConfig(ecosystem, project *SkillsConfig) *SkillsConfig {
 	// If both are nil, return nil
 	if ecosystem == nil && project == nil {
@@ -225,7 +344,9 @@ func mergeSkillsConfig(ecosystem, project *SkillsConfig) *SkillsConfig {
 	return merged
 }
 
-// copySkillsConfig creates a deep copy of a SkillsConfig.
+// copySkillsConfig creates a deep copy of a SkillsConfig's effective fields.
+// Projects/Ecosystems (looked up from the original global config) and Scope
+// (consumed during the merge) are intentionally not carried over.
 func copySkillsConfig(cfg *SkillsConfig) *SkillsConfig {
 	if cfg == nil {
 		return nil
